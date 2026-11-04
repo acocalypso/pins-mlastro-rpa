@@ -15,15 +15,22 @@
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <label
           >Connection
-          <select v-model="transport" :disabled="busy || status.connected" class="field">
+          <select
+            :value="connection.transport"
+            :disabled="busy || status.connected"
+            class="field"
+            @change="transport = $event.target.value"
+          >
             <option value="wifi">Wi-Fi</option>
             <option value="usb">USB serial</option>
           </select>
         </label>
-        <label v-if="transport === 'wifi'"
+        <label v-if="connection.transport === 'wifi'"
           >Hostname or IP address
           <input
-            v-model="address"
+            :value="connection.address"
+            @input="address = $event.target.value"
+            :placeholder="status.connected ? 'Connected address unavailable' : ''"
             :disabled="busy || status.connected"
             class="field"
             spellcheck="false"
@@ -32,11 +39,20 @@
         <label v-else
           >USB device
           <select
-            v-model="usbSelection"
+            :value="connection.address"
+            @change="usbSelection = $event.target.value"
             :disabled="busy || status.connected || usbLoading"
             class="field"
           >
             <option value="auto">Auto-detect</option>
+            <option
+              v-if="
+                status.connected && !usbDevices.some((device) => device.path === connection.address)
+              "
+              :value="connection.address"
+            >
+              Connected RPA - {{ connection.address }}
+            </option>
             <option v-for="device in usbDevices" :key="device.path" :value="device.path">
               {{ device.label }}{{ device.likelyRpa ? ' (likely RPA)' : '' }} - {{ device.path }}
             </option>
@@ -334,6 +350,7 @@ import { buildTppaStartMessage } from '@/utils/tppaStart';
 import { rpaRequest } from '../api';
 import { startAutomaticAlignment } from '../workflow';
 import { createJogController } from '../jog';
+import { connectionForDisplay } from '../connection';
 
 const rig = apiStore();
 const tppa = useTppaStore();
@@ -358,6 +375,13 @@ const jog = createJogController({
 const transport = ref('wifi');
 const address = ref('mlastrorpa.local');
 const usbSelection = ref('auto');
+const connection = computed(() =>
+  connectionForDisplay(status.value, {
+    transport: transport.value,
+    address: address.value,
+    usbSelection: usbSelection.value,
+  })
+);
 const usbDevices = ref([]);
 const usbLoading = ref(false);
 let usbDiscoveryGeneration = 0;

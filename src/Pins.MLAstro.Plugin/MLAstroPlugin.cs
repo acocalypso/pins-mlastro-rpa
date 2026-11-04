@@ -55,6 +55,8 @@ public sealed class MLAstroPlugin : PluginBase
     }
     public object GetStatus() => new {
         connected = IsHardwareConnected,
+        transport = IsHardwareConnected ? (Wireless.IsConnected ? "wifi" : "usb") : null,
+        connectionAddress = IsHardwareConnected ? (Wireless.IsConnected ? Wireless.ConfiguredAddress : Settings.ComPort) : null,
         usbDevicePath = IsHardwareConnected && Settings.TransportMode == MlastroTransportMode.Serial ? Settings.ComPort : null,
         firmware = Serial.FirmwareVersion,
         deviceStatus = Serial.DeviceStatus,

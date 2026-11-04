@@ -56,6 +56,40 @@ new file mode 100644
 +    /Several possible RPA USB devices/
 +  );
 +});
+diff --git a/src/plugins/mlastro-rpa/__tests__/connection.test.js b/src/plugins/mlastro-rpa/__tests__/connection.test.js
+new file mode 100644
+--- /dev/null
++++ b/src/plugins/mlastro-rpa/__tests__/connection.test.js
+@@ -0,0 +1,29 @@
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { connectionForDisplay } from '../connection.js';
++
++const defaults = { transport: 'wifi', address: 'mlastrorpa.local', usbSelection: 'auto' };
++
++test('reopening a connected USB panel overrides fresh Wi-Fi defaults', () => {
++  assert.deepEqual(
++    connectionForDisplay({ connected: true, usbDevicePath: '/dev/ttyUSB1' }, defaults),
++    { transport: 'usb', address: '/dev/ttyUSB1' }
++  );
++});
++
++test('connected Wi-Fi displays the actual backend address, not the draft hostname', () => {
++  assert.deepEqual(
++    connectionForDisplay(
++      { connected: true, transport: 'wifi', connectionAddress: 'rpa.example' },
++      { ...defaults, transport: 'usb' }
++    ),
++    { transport: 'wifi', address: 'rpa.example' }
++  );
++});
++
++test('disconnected controls retain editable draft choices', () => {
++  assert.deepEqual(connectionForDisplay({ connected: false }, defaults), {
++    transport: 'wifi',
++    address: 'mlastrorpa.local',
++  });
++});
 diff --git a/src/plugins/mlastro-rpa/__tests__/jog.test.js b/src/plugins/mlastro-rpa/__tests__/jog.test.js
 new file mode 100644
 --- /dev/null
@@ -213,6 +247,25 @@ new file mode 100644
 +    throw new Error(error.response?.data?.error || error.message || 'RPA request failed');
 +  }
 +}
+diff --git a/src/plugins/mlastro-rpa/connection.js b/src/plugins/mlastro-rpa/connection.js
+new file mode 100644
+--- /dev/null
++++ b/src/plugins/mlastro-rpa/connection.js
+@@ -0,0 +1,14 @@
++// A connected device is authoritative; draft selections are only used while disconnected.
++export function connectionForDisplay(status, draft) {
++  if (!status.connected) {
++    return {
++      transport: draft.transport,
++      address: draft.transport === 'usb' ? draft.usbSelection : draft.address,
++    };
++  }
++  const transport = status.transport || (status.usbDevicePath ? 'usb' : 'wifi');
++  return {
++    transport,
++    address: status.connectionAddress || (transport === 'usb' ? status.usbDevicePath : '') || '',
++  };
++}
 diff --git a/src/plugins/mlastro-rpa/index.js b/src/plugins/mlastro-rpa/index.js
 new file mode 100644
 --- /dev/null
@@ -304,7 +357,7 @@ diff --git a/src/plugins/mlastro-rpa/views/MlastroView.vue b/src/plugins/mlastro
 new file mode 100644
 --- /dev/null
 +++ b/src/plugins/mlastro-rpa/views/MlastroView.vue
-@@ -0,0 +1,780 @@
+@@ -0,0 +1,804 @@
 +<template>
 +  <main class="mx-auto max-w-2xl p-4 space-y-5 text-gray-200">
 +    <header>
@@ -322,15 +375,22 @@ new file mode 100644
 +      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
 +        <label
 +          >Connection
-+          <select v-model="transport" :disabled="busy || status.connected" class="field">
++          <select
++            :value="connection.transport"
++            :disabled="busy || status.connected"
++            class="field"
++            @change="transport = $event.target.value"
++          >
 +            <option value="wifi">Wi-Fi</option>
 +            <option value="usb">USB serial</option>
 +          </select>
 +        </label>
-+        <label v-if="transport === 'wifi'"
++        <label v-if="connection.transport === 'wifi'"
 +          >Hostname or IP address
 +          <input
-+            v-model="address"
++            :value="connection.address"
++            @input="address = $event.target.value"
++            :placeholder="status.connected ? 'Connected address unavailable' : ''"
 +            :disabled="busy || status.connected"
 +            class="field"
 +            spellcheck="false"
@@ -339,11 +399,20 @@ new file mode 100644
 +        <label v-else
 +          >USB device
 +          <select
-+            v-model="usbSelection"
++            :value="connection.address"
++            @change="usbSelection = $event.target.value"
 +            :disabled="busy || status.connected || usbLoading"
 +            class="field"
 +          >
 +            <option value="auto">Auto-detect</option>
++            <option
++              v-if="
++                status.connected && !usbDevices.some((device) => device.path === connection.address)
++              "
++              :value="connection.address"
++            >
++              Connected RPA - {{ connection.address }}
++            </option>
 +            <option v-for="device in usbDevices" :key="device.path" :value="device.path">
 +              {{ device.label }}{{ device.likelyRpa ? ' (likely RPA)' : '' }} - {{ device.path }}
 +            </option>
@@ -641,6 +710,7 @@ new file mode 100644
 +import { rpaRequest } from '../api';
 +import { startAutomaticAlignment } from '../workflow';
 +import { createJogController } from '../jog';
++import { connectionForDisplay } from '../connection';
 +
 +const rig = apiStore();
 +const tppa = useTppaStore();
@@ -665,6 +735,13 @@ new file mode 100644
 +const transport = ref('wifi');
 +const address = ref('mlastrorpa.local');
 +const usbSelection = ref('auto');
++const connection = computed(() =>
++  connectionForDisplay(status.value, {
++    transport: transport.value,
++    address: address.value,
++    usbSelection: usbSelection.value,
++  })
++);
 +const usbDevices = ref([]);
 +const usbLoading = ref(false);
 +let usbDiscoveryGeneration = 0;

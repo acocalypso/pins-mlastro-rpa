@@ -16,3 +16,8 @@ Tests include a stalled transport, expired/stale leases, explicit release, concu
 The prepared source has portable build-reference and test-runtime paths. The export-only adaptation compiled successfully for the plugin, plugin-check project and diagnostic CLI; protocol checks and the relay compile check also passed. It does not change the movement algorithm or protocol. Test/binary evidence from development does not establish unattended safety, firmware-side deadman behavior, complete USB movement validation or sky alignment accuracy.
 
 USB and host network interruptions occurred during development. A Pi reboot restored real USB communication. No hardware problem, USB cable failure or network root cause has been conclusively established by these tests. Local deployment chronology and private logs are intentionally omitted from this export.
+
+
+## Active connection display
+
+The panel derives connected transport and address from backend status instead of its newly initialized form defaults. Existing servers reporting usbDevicePath remain supported; a connected USB device stays selected even before USB inventory finishes loading. Connected controls remain disabled. Disconnected draft choices remain editable. Three regression cases cover reopening USB with Wi-Fi defaults, displaying an authoritative Wi-Fi address and retaining disconnected choices. Twelve frontend tests and plugin lint passed; backend and web/Android builds passed.

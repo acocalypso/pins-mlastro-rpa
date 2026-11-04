@@ -4,7 +4,7 @@ Local service: `http://127.0.0.1:1891`. ninaAPI relay prefix: `/v2/api/mlastro`.
 
 | Method | Path | Purpose / body |
 |---|---|---|
-| GET | /status | Connection, device/firmware state, manual/jog and automation/session status |
+| GET | /status | Connection, active transport/address, device/firmware state, manual/jog and automation/session status |
 | GET | /usb-devices | Metadata list and suggested unambiguous selection; no ports opened |
 | POST | /connect | `{ "transport":"usb", "address":"auto" }`, an explicit Linux serial path, or `{ "transport":"wifi", "address":"mlastrorpa.local" }` |
 | POST | /disconnect | `{}`; disables automation and releases connection |
