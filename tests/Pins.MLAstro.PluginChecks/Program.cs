@@ -47,9 +47,34 @@ static class PluginChecks
         var watch = System.Diagnostics.Stopwatch.StartNew();
         try { stalled.StartAsync("az", 1).GetAwaiter().GetResult(); throw new Exception("Stalled transport accepted"); }
         catch (TimeoutException) { }
-        if (watch.ElapsedMilliseconds > 2000 || fallbackStops != 1 || stalled.Active) throw new Exception("Stalled send trapped stop");
+        if (watch.ElapsedMilliseconds > 2000 || fallbackStops != 1 || !stalled.Active || stalled.IsQuiescent) throw new Exception("Stalled send did not remain inhibited");
+        stalled.Fence();
+        try { stalled.ResetAfterReconnect(); throw new Exception("Reset accepted an outstanding callback"); }
+        catch (InvalidOperationException) { }
+        hung.SetResult();
+        if (!SpinWait.SpinUntil(() => stalled.IsQuiescent, 2000)) throw new Exception("Completed callback remained active");
+        stalled.ResetAfterReconnect();
+        if (stalled.Active) throw new Exception("Reconnect did not clear stale lease");
         stalled.DisposeAsync().AsTask().GetAwaiter().GetResult();
         Console.WriteLine("PASS stalled transport cannot trap jog stop indefinitely");
+        using (var unblock = new ManualResetEventSlim()) {
+            var releaseCount = 0;
+            var synchronousHang = new NINA.Plugins.MLAstroRPA.JogLease(
+                (_, _, _) => { unblock.Wait(); return Task.CompletedTask; },
+                (_, _, _) => Task.CompletedTask,
+                (_, _, _) => { Interlocked.Increment(ref releaseCount); return Task.CompletedTask; });
+            watch.Restart();
+            try { synchronousHang.StartAsync("az", 1).GetAwaiter().GetResult(); throw new Exception("Blocked callback accepted"); }
+            catch (TimeoutException) { }
+            if (watch.ElapsedMilliseconds > 2000 || releaseCount != 1 || synchronousHang.IsQuiescent)
+                throw new Exception("Synchronous callback initiation trapped release or lost tracking");
+            synchronousHang.Fence();
+            unblock.Set();
+            if (!SpinWait.SpinUntil(() => synchronousHang.IsQuiescent, 2000)) throw new Exception("Callback did not quiesce");
+            synchronousHang.ResetAfterReconnect();
+            synchronousHang.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        }
+        Console.WriteLine("PASS blocking callback initiation remains bounded and tracked");
         using (var http = new HttpClient { BaseAddress = new Uri("http://127.0.0.1:1893") })
         {
             var status = http.GetStringAsync("/status").GetAwaiter().GetResult();

@@ -195,7 +195,7 @@ namespace MLAstroRPA.Broker
             {
                 var command = BuildAlignCommand(plan);
                 Logger.Info($"[MLAstro][Broker] ALIGN {command.TrimEnd()} (expecting {expectedCompletion})");
-                _serial.Send(command);
+                if (!await _serial.SendMotionAsync(command, token)) return false;
 
                 var timeout = Task.Delay(AlignTimeout, token);
                 var finished = await Task.WhenAny(completion.Task, timeout).ConfigureAwait(false);
@@ -291,38 +291,18 @@ namespace MLAstroRPA.Broker
         {
             if (!IsMoving) { return false; }
             AbortPendingMove();
-            await StopAsync().ConfigureAwait(false);
-            return true;
+            return await StopAsync().ConfigureAwait(false);
         }
 
         /// <summary>Sends an immediate stop to the firmware. Returns true when the STOP really went out.</summary>
-        public Task<bool> StopAsync()
+        public event Action<string> StopFailed;
+        public async Task<bool> StopAsync()
         {
-            try
-            {
-                if (!_serial.IsConnected)
-                {
-                    Logger.Warning("[MLAstro][Broker] Cannot send STOP: the hardware link is not connected.");
-                    return Task.FromResult(false);
-                }
-
-                var sent = _serial.Send("STOP:1\n");
-                if (sent)
-                {
-                    Logger.Info("[MLAstro][Broker] Sent STOP to the hardware.");
-                }
-                else
-                {
-                    Logger.Warning("[MLAstro][Broker] STOP was not accepted by the link.");
-                }
-
-                return Task.FromResult(sent);
-            }
-            catch (Exception ex)
-            {
-                Logger.Error($"[MLAstro][Broker] Failed to stop the hardware: {ex.Message}");
-                return Task.FromResult(false);
-            }
+            bool sent;
+            try { sent = await _serial.SendStopAsync(CancellationToken.None).ConfigureAwait(false); }
+            catch (Exception ex) { Logger.Error(ex); sent = false; }
+            if (!sent) StopFailed?.Invoke("Hardware STOP was not transmitted; disconnect and confirm recovery before moving.");
+            return sent;
         }
 
         private void OnCompletionReceived(object sender, string completionType)

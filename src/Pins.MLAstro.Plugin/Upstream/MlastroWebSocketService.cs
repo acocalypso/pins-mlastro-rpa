@@ -1,4 +1,4 @@
-using MLAstroRPA.Dockables;
+﻿using MLAstroRPA.Dockables;
 using MLAstroRPA.Settings;
 using NINA.Core.Utility;
 using NINA.Core.Utility.Notification;
@@ -50,7 +50,29 @@ namespace MLAstroRPA.Services
 
         private readonly PluginSettings _settings;
         private readonly SerialConnectionService _serial;
-        private readonly SemaphoreSlim _sendLock = new(1, 1);
+        private readonly object _writeState = new();
+        private readonly List<BoundedCommandWriter> _writers = new();
+        private readonly List<Task> _retiredReceiveLoops = new();
+        private BoundedCommandWriter? _writer;
+        private CancellationTokenSource _motionCancellation = new();
+        private bool _motionBlocked;
+        private int _cancelInFlight;
+        public bool WritesQuiescent { get { lock (_writeState) return _cancelInFlight == 0 && _writers.All(w => w.InFlight == 0) && _retiredReceiveLoops.All(t => t.IsCompleted); } }
+        public void CancelPendingMotion() {
+            CancellationTokenSource old;
+            lock (_writeState) { _motionBlocked = true; old = _motionCancellation; _cancelInFlight++; }
+            var cancellation = old.CancelAsync();
+            _ = cancellation.ContinueWith(t => { _ = t.Exception; lock (_writeState) _cancelInFlight--; }, TaskScheduler.Default);
+        }
+        public void AllowMotion() { lock (_writeState) { _motionCancellation = new CancellationTokenSource(); _motionBlocked = false; } }
+        private bool MotionAllowed { get { lock (_writeState) return !_motionBlocked; } }
+        private void InstallWriter(ClientWebSocket socket)
+        {
+            var writer = new BoundedCommandWriter(async (bytes, token) => await socket.SendAsync(bytes, WebSocketMessageType.Text, true, token).ConfigureAwait(false),
+                () => ReferenceEquals(_socket, socket),
+                () => { _serial.ReportMotionFault("Wireless write was not confirmed."); if (ReferenceEquals(_socket, socket)) { AbortSocket(); IsConnected = false; } });
+            lock (_writeState) { _writer = writer; _writers.Add(writer); }
+        }
         private readonly object _stateLock = new();
 
         private ClientWebSocket? _socket;
@@ -289,6 +311,8 @@ namespace MLAstroRPA.Services
         public async Task<bool> ConnectAsync(CancellationToken token = default)
         {
             if (IsConnected) return true;
+            if (!_serial.WritesQuiescent) { ConnectionStatus = "Previous write or cleanup still in progress"; return false; }
+            _serial.ClearSessionTelemetry();
 
             // New session: clear the table of the previous session (like refreshing the Web UI page) so it only
             // shows the events of this connection. The clear is the FIRST statement here - it runs BEFORE the
@@ -393,7 +417,8 @@ namespace MLAstroRPA.Services
                 return false;
             }
 
-            _socket = socket;
+            _serial.RunForCurrentSession(() => true, () => { _serial.ClearSessionTelemetry(); _socket = socket; });
+            InstallWriter(socket);
             _cts = CancellationTokenSource.CreateLinkedTokenSource(token);
             _snapshotSections.Clear();
 
@@ -403,7 +428,8 @@ namespace MLAstroRPA.Services
 
             var connectedHost = uri?.Host ?? host;
             AppendLog($"Connected to {connectedHost}:{port}{path}. Sending handshake '{HandshakeKey}'...");
-            await SendJsonAsync(BuildHandshake(), _cts.Token).ConfigureAwait(false);
+            try { await SendJsonAsync(BuildHandshake(), _cts.Token).ConfigureAwait(false); }
+            catch { if (ReferenceEquals(_socket, socket)) AbortSocket(); throw; }
 
             var completed = await Task.WhenAny(_handshakeTcs.Task, Task.Delay(HandshakeTimeout, _cts.Token)).ConfigureAwait(false);
             if (completed != _handshakeTcs.Task || !_handshakeTcs.Task.Result)
@@ -492,6 +518,7 @@ namespace MLAstroRPA.Services
 
         private void AbortSocket()
         {
+            lock (_writeState) { _writer?.Cancel(); _writer = null; if (_receiveLoop != null) _retiredReceiveLoops.Add(_receiveLoop); }
             _activeJogAxis = null;
             _activeJogDirection = 0;
             _alignInFlight = false;
@@ -592,9 +619,7 @@ namespace MLAstroRPA.Services
                     var text = message.ToString();
                     message.Clear();
                     if (!string.IsNullOrWhiteSpace(text))
-                    {
-                        HandleIncoming(text);
-                    }
+                        _serial.RunForCurrentSession(() => ReferenceEquals(_socket, socket), () => HandleIncoming(text));
                 }
             }
             catch (OperationCanceledException) { }
@@ -604,6 +629,7 @@ namespace MLAstroRPA.Services
             }
             finally
             {
+                _serial.RunForCurrentSession(() => ReferenceEquals(_socket, socket), () => {
                 var wasConnected = IsConnected;
                 IsConnected = false;
                 HandshakeStatus = string.Empty;
@@ -614,6 +640,7 @@ namespace MLAstroRPA.Services
                     // The device can no longer be driven -> TPPA has to stop the running PA.
                     try { StopRequested?.Invoke("Wireless connection closed."); } catch { }
                 }
+                });
             }
         }
 
@@ -932,7 +959,7 @@ namespace MLAstroRPA.Services
         /// <summary>Assembles JSON telemetry into the exact text format of the serial firmware.</summary>
         private string BuildSerialTelemetryLine(JsonElement root)
         {
-            var status = TryGetString(root, "sys_status", out var s) ? s : "READY";
+            var status = TryGetString(root, "sys_status", out var s) ? s : "UNKNOWN";
             var movedAz = TryGetDouble(root, "align_moved_az", out var az) ? az : 0;
             var movedAlt = TryGetDouble(root, "align_moved_alt", out var alt) ? alt : 0;
 
@@ -1107,7 +1134,7 @@ namespace MLAstroRPA.Services
         {
             return SendJsonAsync(moving
                 ? JsonSerializer.Serialize(new { cmd = "move", data = new { axis, direction, speed = _speedLevelFromSnapshot } })
-                : JsonSerializer.Serialize(new { cmd = "stopMove", data = new { axis } }), token);
+                : JsonSerializer.Serialize(new { cmd = "stopMove", data = new { axis } }), token, moving);
         }
 
         public Task SendManualRelativeAsync(string axis, int direction, int arcseconds, CancellationToken token)
@@ -1116,7 +1143,17 @@ namespace MLAstroRPA.Services
                 throw new ArgumentException("Invalid manual relative move.");
             return SendJsonAsync(JsonSerializer.Serialize(new { cmd = "moveRelative", data = new {
                 axis, direction, angle = arcseconds / 3600.0, speed = _speedLevelFromSnapshot
-            }}), token);
+            }}), token, true);
+        }
+
+        public async Task<bool> SendCommandAsync(string line, CancellationToken token, bool motion)
+        {
+            try {
+                if (!IsConnected) return false;
+                var outgoing = Translate(ParseCommandLine(line));
+                foreach (var json in outgoing) await SendJsonAsync(json, token, motion).ConfigureAwait(false);
+                return true;
+            } catch { return false; }
         }
 
         public bool Send(string line)
@@ -1701,23 +1738,24 @@ namespace MLAstroRPA.Services
             _serial.InjectIncomingText(line + "\n");
         }
 
-        private async Task SendJsonAsync(string json, CancellationToken token)
+        private async Task SendJsonAsync(string json, CancellationToken token, bool motion = false)
         {
-            var socket = _socket;
-            if (socket == null || socket.State != WebSocketState.Open)
-            {
-                throw new InvalidOperationException("WebSocket is not open.");
-            }
-
-            var bytes = Encoding.UTF8.GetBytes(json);
-            await _sendLock.WaitAsync(token).ConfigureAwait(false);
-            try
-            {
-                await socket.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, token).ConfigureAwait(false);
-            }
-            finally
-            {
-                _sendLock.Release();
+            // Text commands from the external aligner are translated here too.
+            motion = motion || json.Contains("\"cmd\":\"move\"", StringComparison.OrdinalIgnoreCase)
+                || json.Contains("\"cmd\":\"moveRelative\"", StringComparison.OrdinalIgnoreCase)
+                || json.Contains("\"cmd\":\"align\"", StringComparison.OrdinalIgnoreCase)
+                || json.Contains("\"cmd\":\"applyConfig\"", StringComparison.OrdinalIgnoreCase);
+            CancellationToken motionToken;
+            BoundedCommandWriter? writer;
+            lock (_writeState) { if (motion && _motionBlocked) throw new InvalidOperationException("Motion fenced."); motionToken = _motionCancellation.Token; writer = _writer; }
+            if (writer == null) throw new InvalidOperationException("WebSocket is not open.");
+            var linked = motion ? CancellationTokenSource.CreateLinkedTokenSource(token, motionToken) : CancellationTokenSource.CreateLinkedTokenSource(token);
+            try {
+                if (!await writer.SendAsync(Encoding.UTF8.GetBytes(json), linked.Token, motion ? () => MotionAllowed : null).ConfigureAwait(false))
+                    throw new InvalidOperationException("WebSocket command was not confirmed.");
+            } finally {
+                lock (_writeState) _cancelInFlight++;
+                _ = Task.Run(() => { try { linked.Dispose(); } finally { lock (_writeState) _cancelInFlight--; } });
             }
         }
 

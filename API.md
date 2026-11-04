@@ -22,3 +22,7 @@ Local service: `http://127.0.0.1:1891`. ninaAPI relay prefix: `/v2/api/mlastro`.
 The frontend orchestrates preflight, controller selection, arming and TPPA websocket start. The automation endpoint alone does not launch TPPA. Pending starts expire; completion/cancellation returns TPPA's correction selection to None. Connect has a 45-second request deadline for multiple USB candidates; relay timeout is 50 seconds and frontend connect timeout 55 seconds. Other local operations retain a 10-second request deadline.
 
 `pauseBeforeFirstCorrection` pauses before RPA correction, after TPPA's reference sweep; it does not prevent the initial mount movements. Full sky acceptance remains pending.
+
+The status response includes `motionInhibited`, `motionState` (`Ready`, `Stopping`, or `Faulted`) and `motionFault`. A failed axis release, uncertain transport write, failed STOP or missing post-STOP READY confirmation latches a fault. Manual movement, jog and automation remain blocked even if an old telemetry snapshot says READY. Disconnect remains available; a failed physical stop is still reported as a conflict after the connection closes.
+
+Recovery requires an explicit new connection, completed old writes/cancellation/cleanup, and fresh explicit READY telemetry across the settling interval. Reconnection never resumes movement. A newer Stop or failure invalidates an in-progress recovery. STOP attempts axis release and the general stop independently and disarms automation/releases TPPA ownership even when either attempt fails.

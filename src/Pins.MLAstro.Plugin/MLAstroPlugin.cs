@@ -32,6 +32,9 @@ public sealed class MLAstroPlugin : PluginBase
     public BridgeRunner Runner { get; }
     private readonly SemaphoreSlim controlGate = new(1, 1);
     private int stopGeneration;
+    private readonly MotionSafety motionSafety = new();
+    private int handlingMotionFault;
+    private readonly object motionGate = new();
     private readonly JogLease jog;
     private DateTime connectedAt;
     private readonly object selectionGate = new();
@@ -44,6 +47,13 @@ public sealed class MLAstroPlugin : PluginBase
     private string manualMoveStatus = "Idle";
     private CancellationTokenSource manualCancellation;
     private Task manualTask = Task.CompletedTask;
+    private readonly System.Collections.Concurrent.ConcurrentBag<Task> manualCancellations = new();
+    private bool MotionWorkQuiescent => Serial.WritesQuiescent && jog.IsQuiescent && manualTask.IsCompleted && manualCancellations.All(t => t.IsCompleted);
+    private void CancelManual()
+    {
+        var cancellation = manualCancellation;
+        if (cancellation != null) manualCancellations.Add(cancellation.CancelAsync());
+    }
 
     private bool IsHardwareConnected => Serial.IsConnected && (Wireless.IsConnected || Serial.ControllerIdentityConfirmed);
     public object GetUsbDevices()
@@ -54,6 +64,7 @@ public sealed class MLAstroPlugin : PluginBase
         return new { devices, selectedPath };
     }
     public object GetStatus() => new {
+        motionInhibited = motionSafety.Inhibited, motionState = motionSafety.State, motionFault = motionSafety.Fault,
         connected = IsHardwareConnected,
         transport = IsHardwareConnected ? (Wireless.IsConnected ? "wifi" : "usb") : null,
         connectionAddress = IsHardwareConnected ? (Wireless.IsConnected ? Wireless.ConfiguredAddress : Settings.ComPort) : null,
@@ -72,11 +83,15 @@ public sealed class MLAstroPlugin : PluginBase
 
     public async Task ManualMoveAsync(string axis, int direction, double arcseconds)
     {
+        var generation = Volatile.Read(ref stopGeneration);
         if ((axis != "az" && axis != "alt") || (direction != -1 && direction != 1) ||
             !double.IsFinite(arcseconds) || arcseconds < 1 || arcseconds > 120 || arcseconds != Math.Truncate(arcseconds))
             throw new ArgumentException("Choose az/alt, direction -1/+1 and a step of 1–120 arcseconds.");
         await controlGate.WaitAsync();
         try {
+            lock (motionGate) {
+            RequireMotionSafe();
+            if (generation != Volatile.Read(ref stopGeneration)) throw new InvalidOperationException("A stop superseded this move.");
             if (jog.Active || manualMoveActive || Runner.IsSessionRunning || Settings.TppaBrokerEnabled)
                 throw new InvalidOperationException("Stop the current operation and disable automation before manual adjustment.");
             if (!IsHardwareConnected || !Serial.IsDeviceIdle)
@@ -87,6 +102,7 @@ public sealed class MLAstroPlugin : PluginBase
             manualMoveStatus = "Moving; waiting for firmware completion";
             // Starts synchronously through command transmission while controlGate is held.
             manualTask = ObserveManualMoveAsync(axis, direction, (int)arcseconds, manualCancellation.Token);
+            }
         } finally { controlGate.Release(); }
     }
 
@@ -96,15 +112,18 @@ public sealed class MLAstroPlugin : PluginBase
             token.ThrowIfCancellationRequested();
             var completed = await ManualRelativeMove.RunAsync(Serial, Wireless, axis, direction, arcseconds, token);
             manualMoveStatus = completed ? "Movement complete" : "Movement not confirmed; inspect device status";
+            if (!completed) await HandleMotionFailureAsync("Manual movement completion was not confirmed.");
         } catch (OperationCanceledException) { manualMoveStatus = "Stop requested; inspect device status"; }
-        catch (Exception ex) { manualMoveStatus = "Movement failed; inspect device status"; Logger.Error(ex); }
-        finally { manualMoveActive = false; }
+        catch (Exception ex) { manualMoveStatus = "Movement failed; inspect device status"; Logger.Error(ex); await HandleMotionFailureAsync("Manual movement failed; stopping could not be assumed."); }
+        finally { if (manualCancellation?.Token == token) manualMoveActive = false; }
     }
 
     /// <summary>Explicit connection operation; never retries a movement or starts alignment.</summary>
     public async Task<bool> ConnectAsync(bool wifi, string address, CancellationToken token)
     {
         var generation = Volatile.Read(ref stopGeneration);
+        var recoveryStarted = false;
+        long recoveryEpoch = 0;
         await controlGate.WaitAsync(token);
         try {
             if (generation != Volatile.Read(ref stopGeneration)) throw new OperationCanceledException("Connection cancelled by Stop.");
@@ -114,6 +133,16 @@ public sealed class MLAstroPlugin : PluginBase
             if (!automaticUsb && string.IsNullOrWhiteSpace(address)) throw new ArgumentException("A device address is required.");
             if (wifi && Uri.CheckHostName(address) == UriHostNameType.Unknown) throw new ArgumentException("Use a hostname or IP address without a scheme or path.");
             if (!wifi && !automaticUsb && !address.StartsWith("/dev/", StringComparison.Ordinal)) throw new ArgumentException("Choose a Linux /dev/ serial device.");
+            lock (motionGate) {
+                if (generation != Volatile.Read(ref stopGeneration)) throw new OperationCanceledException("Connection cancelled by Stop.");
+                recoveryEpoch = motionSafety.BeginStop();
+                recoveryStarted = true;
+                Serial.CancelPendingMotion();
+                jog.Fence();
+            }
+            var drainDeadline = DateTime.UtcNow.AddSeconds(2);
+            while (!MotionWorkQuiescent && DateTime.UtcNow < drainDeadline) await Task.Delay(10, token);
+            if (!MotionWorkQuiescent) throw new InvalidOperationException("Previous transport work has not finished; reconnect later.");
             connectedAt = DateTime.UtcNow;
             Settings.TransportMode = wifi ? MlastroTransportMode.Wireless : MlastroTransportMode.Serial;
             if (wifi) {
@@ -123,14 +152,25 @@ public sealed class MLAstroPlugin : PluginBase
                     Wireless.Disconnect();
                     throw new OperationCanceledException("Connection cancelled.");
                 }
+                if (connected) await RecoverConnectionAsync(generation, recoveryEpoch, token);
+                else LatchMotionFailure("Connection was not confirmed; movement remains blocked.");
                 return connected;
             }
             if (automaticUsb) {
                 await UsbAutoConnector.FindAsync(UsbDiscovery.Enumerate(), Settings.VerifiedUsbPath,
                     (path, ct) => ConnectConfirmedUsbAsync(path, ct, generation), token);
+                await RecoverConnectionAsync(generation, recoveryEpoch, token);
                 return true;
             }
-            return await ConnectConfirmedUsbAsync(address, token, generation);
+            var usbConnected = await ConnectConfirmedUsbAsync(address, token, generation);
+            if (usbConnected) await RecoverConnectionAsync(generation, recoveryEpoch, token);
+            return usbConnected;
+        } catch {
+            if (recoveryStarted) lock (motionGate) {
+                if (IsHardwareConnected) LatchMotionFailure("Connection recovery was not confirmed; movement remains blocked.");
+                else motionSafety.CompleteStop(recoveryEpoch); // An unidentified closed port never admitted movement.
+            }
+            throw;
         } finally { controlGate.Release(); }
     }
 
@@ -189,10 +229,15 @@ public sealed class MLAstroPlugin : PluginBase
 
     public async Task SelectForTppaAsync()
     {
+        var generation = Volatile.Read(ref stopGeneration);
         await controlGate.WaitAsync();
         try {
+            lock (motionGate) {
+            RequireMotionSafe();
+            if (generation != Volatile.Read(ref stopGeneration)) throw new InvalidOperationException("A stop superseded controller selection.");
             if (Runner.IsSessionRunning || Settings.TppaBrokerEnabled) throw new InvalidOperationException("Disable automation before selecting the controller.");
             SelectTppaForOneRun();
+            }
         } finally { controlGate.Release(); }
     }
 
@@ -218,6 +263,8 @@ public sealed class MLAstroPlugin : PluginBase
         await controlGate.WaitAsync();
         try {
             if (enabled) {
+                lock (motionGate) {
+                RequireMotionSafe();
                 if (jog.Active || manualMoveActive) throw new InvalidOperationException("Wait for the manual adjustment to complete.");
                 if (generation != Volatile.Read(ref stopGeneration)) throw new InvalidOperationException("A stop superseded this enable request.");
                 if (!IsHardwareConnected || !Serial.IsDeviceIdle) throw new InvalidOperationException("Connect idle hardware before enabling automation.");
@@ -230,48 +277,148 @@ public sealed class MLAstroPlugin : PluginBase
                     pendingSession = new CancellationTokenSource();
                     _ = ExpirePendingStartAsync(pendingSession);
                 }
+                }
             } else {
-                if (Runner.IsSessionRunning) await Runner.AbortSessionAsync(BridgeReason.BrokerDisabled);
-                Runner.Stop();
-                Bridge.Enabled = false;
-                ReleaseTppaSelection();
+                try { if (Runner.IsSessionRunning) await Runner.AbortSessionAsync(BridgeReason.BrokerDisabled); }
+                finally {
+                    try { Runner.Stop(); }
+                    finally { try { Bridge.Enabled = false; } finally { ReleaseTppaSelection(); } }
+                }
             }
         } finally { controlGate.Release(); }
     }
 
-    /// <summary>Stop has priority over pending connection and enable operations.</summary>
+    private void RequireMotionSafe()
+    {
+        if (motionSafety.Inhibited || Serial.MotionWritesBlocked)
+            throw new InvalidOperationException(motionSafety.Fault ?? "Movement is blocked while stopping or recovering the connection.");
+    }
+
+    private async Task RecoverConnectionAsync(int generation, long epoch, CancellationToken token)
+    {
+        // Reconnection is the only way to clear an uncertain Stop. Old callbacks must
+        // actually finish, and READY must come from this newly identified connection.
+        if (!await ConfirmFreshReadyAsync(token) || generation != Volatile.Read(ref stopGeneration) ||
+            !MotionWorkQuiescent)
+            throw new InvalidOperationException("Connection recovery is not confirmed; disconnect and retry when the device reports READY.");
+        lock (motionGate) {
+            if (generation != Volatile.Read(ref stopGeneration) || motionSafety.Epoch != epoch)
+                throw new InvalidOperationException("Recovery superseded by Stop.");
+            try {
+                jog.ResetAfterReconnect();
+                Serial.AllowMotion();
+                if (!motionSafety.ClearAfterReconnect(epoch)) throw new InvalidOperationException("Recovery superseded by Stop.");
+            } catch {
+                LatchMotionFailure("Connection recovery did not finish; movement remains blocked.");
+                throw;
+            }
+        }
+    }
+
+    private async Task<bool> ConfirmFreshReadyAsync(CancellationToken token = default)
+    {
+        var before = Serial.LastTelemetry;
+        var connection = connectedAt;
+        var until = DateTime.UtcNow.AddSeconds(4);
+        DateTime? readySince = null;
+        object firstReadySample = null;
+        while (DateTime.UtcNow < until) {
+            token.ThrowIfCancellationRequested();
+            if (!IsHardwareConnected || connectedAt != connection) return false;
+            if (!ReferenceEquals(before, Serial.LastTelemetry) && Serial.IsDeviceIdle &&
+                DateTime.UtcNow - Serial.LastTelemetryAt <= TimeSpan.FromMilliseconds(750)) {
+                if (!readySince.HasValue) { readySince = DateTime.UtcNow; firstReadySample = Serial.LastTelemetry; }
+                if (!ReferenceEquals(firstReadySample, Serial.LastTelemetry) && DateTime.UtcNow - readySince.Value >= TimeSpan.FromMilliseconds(500)) return true;
+            } else { readySince = null; firstReadySample = null; }
+            await Task.Delay(50, token);
+        }
+        return false;
+    }
+
+    private void LatchMotionFailure(string reason)
+    {
+        lock (motionGate) {
+            motionSafety.Fail(motionSafety.Epoch, reason);
+            Serial.CancelPendingMotion();
+            jog.Fence();
+        }
+    }
+
+    private async Task HandleMotionFailureAsync(string reason)
+    {
+        LatchMotionFailure(reason);
+        if (Interlocked.Exchange(ref handlingMotionFault, 1) != 0) return;
+        try { await StopAsync(); } catch (Exception ex) { Logger.Error(ex); }
+        finally { Volatile.Write(ref handlingMotionFault, 0); }
+    }
+
+    /// <summary>Fence movement first; axis release, general STOP and cleanup are independent.</summary>
     public async Task StopAsync()
     {
-        Interlocked.Increment(ref stopGeneration);
-        await jog.StopAsync();
-        if (manualMoveActive) {
-            manualCancellation.Cancel();
-            await hardware.StopAsync();
+        long epoch;
+        bool hadActivity;
+        lock (motionGate) {
+            hadActivity = manualMoveActive || jog.Active || Runner.IsSessionRunning;
+            Interlocked.Increment(ref stopGeneration);
+            epoch = motionSafety.BeginStop();
+            Serial.CancelPendingMotion();
+            jog.Fence();
         }
-        if (Runner.IsSessionRunning) await Runner.AbortSessionAsync(BridgeReason.UserStop);
-        else if (IsHardwareConnected && !Serial.IsDeviceIdle) Serial.Send("STOP:1\n");
-        await controlGate.WaitAsync();
+        CancelManual();
+        hardware.AbortPendingMove();
+        var failures = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        async Task Attempt(Func<Task> action, string name) {
+            try { await action(); } catch (Exception ex) { failures.Enqueue(name + ": " + ex.Message); }
+        }
+        // Start both attempts even if release throws. Never use cached READY to skip STOP.
+        var release = Attempt(() => jog.StopAsync(), "Axis release failed");
+        var stop = Attempt(async () => {
+            if (IsHardwareConnected) {
+                if (!await hardware.StopAsync()) throw new InvalidOperationException("STOP was not transmitted.");
+                if (!await ConfirmFreshReadyAsync()) throw new InvalidOperationException("Fresh READY after STOP was not confirmed.");
+            } else if (hadActivity)
+                throw new InvalidOperationException("Link is unavailable; physical stop is unconfirmed.");
+        }, "Hardware stop failed");
         try {
-            await jog.StopAsync();
-            if (manualMoveActive) { manualCancellation.Cancel(); await hardware.StopAsync(); }
-            Runner.Stop(); Bridge.Enabled = false;
-            ReleaseTppaSelection();
+            if (Runner.IsSessionRunning) await Attempt(() => Runner.AbortSessionAsync(BridgeReason.UserStop), "Alignment abort failed");
+        } finally {
+            // Every cleanup runs even if another cleanup fails.
+            await Attempt(() => { Runner.Stop(); return Task.CompletedTask; }, "Runner cleanup failed");
+            await Attempt(() => { Bridge.Enabled = false; return Task.CompletedTask; }, "Automation cleanup failed");
+            await Attempt(() => { ReleaseTppaSelection(); return Task.CompletedTask; }, "TPPA cleanup failed");
         }
-        finally { controlGate.Release(); }
+        await Task.WhenAll(release, stop);
+        var quiescenceDeadline = DateTime.UtcNow.AddMilliseconds(400);
+        while (!MotionWorkQuiescent && DateTime.UtcNow < quiescenceDeadline) await Task.Delay(10);
+        lock (motionGate) {
+            if (!MotionWorkQuiescent) failures.Enqueue("Transport work has not finished.");
+            if (!failures.IsEmpty) motionSafety.Fail(epoch, string.Join(" ", failures));
+            else {
+                motionSafety.CompleteStop(epoch);
+                if (!motionSafety.Inhibited) {
+                    try { jog.Unfence(); Serial.AllowMotion(); }
+                    catch { LatchMotionFailure("Stop cleanup is not quiescent; reconnect before moving."); throw; }
+                }
+            }
+        }
+        if (motionSafety.Inhibited) throw new InvalidOperationException(motionSafety.Fault ?? "Stop is still in progress.");
     }
 
     public async Task DisconnectAsync()
     {
-        if (jog.Active || manualMoveActive) await StopAsync();
-        await SetAutomationAsync(false);
+        Exception failure = null;
+        try { await StopAsync(); } catch (Exception ex) { failure = ex; }
         await controlGate.WaitAsync();
-        try { await jog.StopAsync(); if (manualMoveActive) { manualCancellation.Cancel(); await hardware.StopAsync(); } Wireless.Disconnect(); Serial.Disconnect(); }
-        finally { controlGate.Release(); }
+        try {
+            try { Wireless.Disconnect(); }
+            finally { Serial.Disconnect(); }
+        } finally { controlGate.Release(); }
+        if (failure != null) throw new InvalidOperationException("Disconnected; physical stop remains unconfirmed. " + failure.Message, failure);
     }
-
 
     private void RequireManualReady()
     {
+        RequireMotionSafe();
         if (jog.Active || manualMoveActive || Runner.IsSessionRunning || Settings.TppaBrokerEnabled || !IsHardwareConnected || !Serial.IsDeviceIdle)
             throw new InvalidOperationException("Connect READY hardware and stop other operations before adjusting the RPA.");
     }
@@ -281,9 +428,13 @@ public sealed class MLAstroPlugin : PluginBase
         var generation = Volatile.Read(ref stopGeneration);
         await controlGate.WaitAsync();
         try {
-            RequireManualReady();
-            if (generation != Volatile.Read(ref stopGeneration)) throw new InvalidOperationException("A stop superseded this jog.");
-            return await jog.StartAsync(axis, direction);
+            Task<string> started;
+            lock (motionGate) {
+                RequireManualReady();
+                if (generation != Volatile.Read(ref stopGeneration)) throw new InvalidOperationException("A stop superseded this jog.");
+                started = jog.StartAsync(axis, direction);
+            }
+            return await started;
         } finally { controlGate.Release(); }
     }
     public Task RenewJogAsync(string leaseId) => jog.RenewAsync(leaseId);
@@ -293,13 +444,16 @@ public sealed class MLAstroPlugin : PluginBase
     private async Task StartJogHardwareAsync(string axis, int direction, CancellationToken token)
     {
         if (Settings.TransportMode == MlastroTransportMode.Wireless) await Wireless.SendJogAsync(axis, direction, true, token);
-        else { SendRequired("JoRe:0\n"); SendRequired(Arrow(axis, direction) + ":1\n"); }
+        else {
+            if (!await Serial.SendMotionAsync("JoRe:0\n", token) || !await Serial.SendMotionAsync(Arrow(axis, direction) + ":1\n", token))
+                throw new InvalidOperationException("Jog command was not sent.");
+        }
     }
-    private Task RefreshJogHardwareAsync(string axis, int direction, CancellationToken token)
+    private async Task RefreshJogHardwareAsync(string axis, int direction, CancellationToken token)
     {
         // USB requires a held-button heartbeat. Wi-Fi move commands are sent only once.
-        if (Settings.TransportMode != MlastroTransportMode.Wireless) SendRequired(Arrow(axis, direction) + ":1\n");
-        return Task.CompletedTask;
+        if (Settings.TransportMode != MlastroTransportMode.Wireless && !await Serial.SendMotionAsync(Arrow(axis, direction) + ":1\n", token))
+            throw new InvalidOperationException("Jog refresh was not sent.");
     }
     private async Task StopJogHardwareAsync(string axis, int direction, CancellationToken token)
     {
@@ -408,6 +562,9 @@ public sealed class MLAstroPlugin : PluginBase
         Runner = new BridgeRunner(Bridge, hardware, settings);
         Runner.SessionActiveChanged += OnSessionActiveChanged;
         jog = new JogLease(StartJogHardwareAsync, RefreshJogHardwareAsync, StopJogHardwareAsync);
+        jog.Faulted += reason => { _ = HandleMotionFailureAsync(reason); };
+        hardware.StopFailed += reason => LatchMotionFailure(reason);
+        Serial.MotionFaulted += reason => { _ = HandleMotionFailureAsync(reason); };
         api = new ControlApi(this, controlPort);
         Logger.Info("[MLAstro Linux] Loaded; hardware connection and automation remain disabled until explicitly enabled.");
     }
@@ -415,16 +572,14 @@ public sealed class MLAstroPlugin : PluginBase
     public override async Task Teardown()
     {
         api.Dispose();
-        if (jog.Active || manualMoveActive || Runner.IsSessionRunning) await StopAsync();
-        await jog.DisposeAsync();
-        manualCancellation?.Cancel();
-        ReleaseTppaSelection();
+        try { await StopAsync(); } catch (Exception ex) { Logger.Error(ex); }
+        try { await jog.DisposeAsync(); } catch (Exception ex) { Logger.Error(ex); }
+        CancelManual();
+        try { ReleaseTppaSelection(); } catch (Exception ex) { Logger.Error(ex); }
         Runner.SessionActiveChanged -= OnSessionActiveChanged;
-        Runner.Dispose();
-        Bridge.Dispose();
-        Wireless.Dispose();
-        Serial.Dispose();
-        hardware.Dispose();
+        foreach (var disposable in new IDisposable[] { Runner, Bridge, Wireless, Serial, hardware }) {
+            try { disposable.Dispose(); } catch (Exception ex) { Logger.Error(ex); }
+        }
         PluginSettings.ClearInstance();
     }
 }

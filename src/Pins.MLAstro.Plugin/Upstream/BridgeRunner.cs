@@ -251,8 +251,9 @@ namespace MLAstroRPA.Broker
             // STOP first, cancel second: the axes must be told to stop before the session token is
             // cancelled, so the STOP never loses the race with the abort.
             lock (_gate) { _stopping = true; }
-            await _aligner.StopAsync().ConfigureAwait(false);
-            CancelSessionInternal();
+            bool stopSent;
+            try { stopSent = await _aligner.StopAsync().ConfigureAwait(false); }
+            finally { CancelSessionInternal(); }
 
             if (sessionEnvelope != null)
             {
@@ -262,7 +263,8 @@ namespace MLAstroRPA.Broker
                              .ConfigureAwait(false);
             }
 
-            SetStatus("Idle");
+            SetStatus(stopSent ? "Idle" : "Stop unconfirmed; movement inhibited");
+            if (!stopSent) throw new InvalidOperationException("Hardware STOP was not transmitted.");
         }
 
         /// <summary>Codes of the incident being collected before the cancel is published.</summary>

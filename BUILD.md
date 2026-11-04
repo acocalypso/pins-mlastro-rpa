@@ -20,6 +20,12 @@ dotnet build tests/Pins.MLAstro.RelayCompile
 
 The plugin references the host's assemblies without copying them. `System.IO.Ports` must be supplied by a compatible PINS runtime. Building does not install, connect to or move equipment.
 
+The standalone adversarial safety checks need only the .NET SDK and PowerShell. They extract the current plugin methods and run with fake collaborators, plus the actual bounded writer:
+
+```powershell
+./tests/Pins.MLAstro.SafetyChecks/run.ps1 -Dotnet dotnet
+```
+
 For the isolated full plugin checks, publish for Linux ARM64, copy the published test directory to a Pi, then run there:
 
 ```sh

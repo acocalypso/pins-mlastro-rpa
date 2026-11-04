@@ -37,17 +37,16 @@ internal static class ManualRelativeMove
             {
                 // Same setters and arrow commands used by the official dock in relative mode.
                 foreach (var command in new[] { "JoRe:1\n", "ReDe:0\n", $"ReAM:{arcseconds / 60}\n", $"ReAS:{arcseconds % 60}\n" })
-                    if (!serial.Send(command)) throw new InvalidOperationException("RPA did not accept the relative move settings.");
+                    if (!await serial.SendMotionAsync(command, token)) throw new InvalidOperationException("RPA did not accept the relative move settings.");
                 var arrow = axis == "az" ? (direction == 1 ? "MAzR" : "MAzL") : (direction == 1 ? "MAlU" : "MAlD");
                 token.ThrowIfCancellationRequested();
-                if (!serial.Send(arrow + ":1\n")) throw new InvalidOperationException("RPA did not accept the relative move.");
+                if (!await serial.SendMotionAsync(arrow + ":1\n", token)) throw new InvalidOperationException("RPA did not accept the relative move.");
             }
             return await completed.Task.WaitAsync(TimeSpan.FromSeconds(90), token);
         }
         catch (TimeoutException)
         {
-            serial.Send("STOP:1\n");
-            return false;
+            throw new TimeoutException("RPA movement did not complete; Stop and confirmed recovery are required.");
         }
         finally { serial.TelemetryDataReceived -= Observe; }
     }

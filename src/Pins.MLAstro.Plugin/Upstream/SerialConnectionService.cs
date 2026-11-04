@@ -172,7 +172,54 @@ namespace MLAstroRPA.Services
         //   - AddExternalLineListener / AddExternalStateListener: receive RX lines + state.
         // (Methods + Action instead of plain events keep reflection access easy for other plugins.)
         // =====================================================================
-        private readonly object _txLock = new();               // sequential write lock (MLAstro + external plugins)
+        public event Action<string>? MotionFaulted;
+        public void ReportMotionFault(string reason) { CancelPendingMotion(); try { MotionFaulted?.Invoke(reason); } catch { } }
+        private readonly object _writeGate = new();
+        private readonly List<BoundedCommandWriter> _writers = new();
+        private BoundedCommandWriter? _writer;
+        private CancellationTokenSource _motionCancellation = new();
+        private bool _motionBlocked;
+        private int _cleanupInFlight;
+        public bool MotionWritesBlocked { get { lock (_writeGate) return _motionBlocked; } }
+        public bool WritesQuiescent { get { lock (_writeGate) return _cleanupInFlight == 0 && Volatile.Read(ref _portOpenInProgress) == 0 && _writers.All(w => w.InFlight == 0) && (_wirelessProxy == null || _wirelessProxy.WritesQuiescent); } }
+        public void CancelPendingMotion() {
+            CancellationTokenSource old;
+            lock (_writeGate) { _motionBlocked = true; old = _motionCancellation; _cleanupInFlight++; }
+            var cancellation = old.CancelAsync();
+            _ = cancellation.ContinueWith(t => { _ = t.Exception; lock (_writeGate) _cleanupInFlight--; }, TaskScheduler.Default);
+            _wirelessProxy?.CancelPendingMotion();
+        }
+        public void AllowMotion() { lock (_writeGate) { _motionCancellation = new CancellationTokenSource(); _motionBlocked = false; } _wirelessProxy?.AllowMotion(); }
+        private static bool IsMotion(string text) => text.IndexOf("AAll:1", StringComparison.OrdinalIgnoreCase) >= 0 || text.IndexOf("AzAN:1", StringComparison.OrdinalIgnoreCase) >= 0 || text.IndexOf("AlAN:1", StringComparison.OrdinalIgnoreCase) >= 0 || ((text.IndexOf("MAz", StringComparison.OrdinalIgnoreCase) >= 0 || text.IndexOf("MAl", StringComparison.OrdinalIgnoreCase) >= 0) && text.IndexOf(":1", StringComparison.OrdinalIgnoreCase) >= 0);
+        public Task<bool> SendMotionAsync(string text, CancellationToken token) => SendCommandAsync(text, token, true);
+        public Task<bool> SendStopAsync(CancellationToken token) => SendCommandAsync("STOP:1\n", token, false);
+        private async Task<bool> SendCommandAsync(string text, CancellationToken token, bool motion)
+        {
+            CancellationToken motionToken;
+            lock (_writeGate) { if (motion && _motionBlocked) return false; motionToken = _motionCancellation.Token; }
+            var linked = motion ? CancellationTokenSource.CreateLinkedTokenSource(token, motionToken) : CancellationTokenSource.CreateLinkedTokenSource(token);
+            try {
+                if (WirelessActive) return await _wirelessProxy!.SendCommandAsync(text, linked.Token, motion).ConfigureAwait(false);
+                var writer = _writer;
+                var port = _serialPort;
+                if (writer == null || port == null) return false;
+                return await writer.SendAsync(port.Encoding.GetBytes(text), linked.Token, motion ? () => !MotionWritesBlocked : null).ConfigureAwait(false);
+            } finally {
+                lock (_writeGate) _cleanupInFlight++;
+                _ = Task.Run(() => { try { linked.Dispose(); } finally { lock (_writeGate) _cleanupInFlight--; } });
+            }
+        }
+        private readonly object _receiveSessionGate = new();
+        public void RunForCurrentSession(Func<bool> current, Action action) { lock (_receiveSessionGate) { if (current()) action(); } }
+        public void ClearSessionTelemetry() { lock (_receiveSessionGate) { LastTelemetry = null; LastTelemetryAt = default; ControllerIdentityConfirmed = false; _lineBuffer.Clear(); } }
+        private void InstallWriter(SerialPort port)
+        {
+            BoundedCommandWriter? writer = null;
+            writer = new BoundedCommandWriter(async (bytes, token) => await port.BaseStream.WriteAsync(bytes, token).ConfigureAwait(false),
+                () => ReferenceEquals(_serialPort, port),
+                () => { ReportMotionFault("USB write was not confirmed."); if (ReferenceEquals(_serialPort, port)) DisconnectPortInstance(); });
+            lock (_writeGate) { _writer = writer; _writers.Add(writer); }
+        }
         private readonly object _externalLock = new();
         private readonly List<Action<string>> _externalLineListeners = new();
         private readonly List<Action<bool>> _externalStateListeners = new();
@@ -323,10 +370,13 @@ namespace MLAstroRPA.Services
         /// <summary>Sequential write through the write lock (two threads must not interleave a command).</summary>
         private void WriteBytes(byte[] data)
         {
-            lock (_txLock)
-            {
-                _serialPort?.Write(data, 0, data.Length);
-            }
+            var port = _serialPort ?? throw new InvalidOperationException("Not connected.");
+            var text = port.Encoding.GetString(data);
+            var motion = IsMotion(text);
+            CancellationToken motionToken;
+            BoundedCommandWriter? writer;
+            lock (_writeGate) { if (motion && _motionBlocked) throw new InvalidOperationException("Motion fenced."); motionToken = _motionCancellation.Token; writer = _writer; }
+            if (writer == null || !writer.SendAsync(data, motion ? motionToken : CancellationToken.None, motion ? () => !MotionWritesBlocked : null).GetAwaiter().GetResult()) throw new System.IO.IOException("Command write not confirmed.");
         }
 
         private void RaiseExternalLine(string line)
@@ -933,6 +983,7 @@ namespace MLAstroRPA.Services
 
         public async Task<bool> ConnectAsync(string portName, int baudRate, bool startChecks = true)
         {
+            if (!WritesQuiescent) { ConnectionStatus = "Previous write or cleanup still in progress"; return false; }
             if (string.IsNullOrWhiteSpace(portName))
             {
                 ConnectionStatus = "No COM port selected";
@@ -970,6 +1021,7 @@ namespace MLAstroRPA.Services
                     var timedOutPort = openingPort;
                     openingPort = null!;
                     cleanupAfterTimeout = true;
+                    lock (_writeGate) _cleanupInFlight++;
                     // Release the in-progress flag immediately so the user can try another port.
                     // The abandoned openTask may still be hanging; the continuation below only cleans up.
                     Interlocked.Exchange(ref _portOpenInProgress, 0);
@@ -995,13 +1047,15 @@ namespace MLAstroRPA.Services
                         {
                             Logger.Warning($"[MLAstro] Timed-out serial port cleanup failed: {ex.Message}");
                         }
+                        finally { lock (_writeGate) _cleanupInFlight--; }
                     }, TaskScheduler.Default);
 
                     return false;
                 }
 
                 await openTask.ConfigureAwait(false);
-                _serialPort = openingPort;
+                lock (_receiveSessionGate) { ClearSessionTelemetry(); _serialPort = openingPort; }
+                InstallWriter(openingPort);
                 openingPort = null!;
 
                 ConnectionStatus = $"Connected: {portName} @ {baudRate} (8-N-1)";
@@ -1199,7 +1253,7 @@ namespace MLAstroRPA.Services
             // Wireless transport: translate the text command to JSON and send it over the WebSocket.
             if (WirelessActive)
             {
-                return _wirelessProxy!.Send(text);
+                return SendCommandAsync(text, CancellationToken.None, IsMotion(text)).GetAwaiter().GetResult();
             }
 
             if (!IsConnected)
@@ -1352,9 +1406,10 @@ namespace MLAstroRPA.Services
 
         private void OnSerialPortDataReceived(object sender, SerialDataReceivedEventArgs e)
         {
+            lock (_receiveSessionGate) {
             try
             {
-                if (_serialPort == null)
+                if (_serialPort == null || !ReferenceEquals(sender, _serialPort))
                 {
                     return;
                 }
@@ -1414,6 +1469,7 @@ namespace MLAstroRPA.Services
             catch (Exception ex)
             {
                 Logger.Warning($"[MLAstro] Serial receive failed: {ex.Message}");
+            }
             }
         }
 
@@ -2274,10 +2330,14 @@ namespace MLAstroRPA.Services
 
         private void DisconnectPortInstance()
         {
-            var closingPort = _serialPort;
-            // Detach this exact instance before cleanup; a blocked OS close must not
-            // leave the shared connection gate or a later Wi-Fi attempt unusable.
-            _serialPort = null!;
+            SerialPort closingPort;
+            lock (_writeGate) {
+                closingPort = _serialPort;
+                if (closingPort != null) _cleanupInFlight++;
+                _serialPort = null!;
+                _writer?.Cancel(); _writer = null;
+            }
+            // Detach this exact instance before cleanup.
             try
             {
                 ResetPendingHandshakeState();
@@ -2292,7 +2352,7 @@ namespace MLAstroRPA.Services
                 if (closingPort == null) return;
                 var cleanup = Task.Run(() => {
                     try { if (closingPort.IsOpen) closingPort.Close(); }
-                    finally { closingPort.Dispose(); }
+                    finally { try { closingPort.Dispose(); } finally { lock (_writeGate) _cleanupInFlight--; } }
                 });
                 if (!cleanup.Wait(1500)) {
                     Logger.Warning("[MLAstro] USB cleanup is still finishing in the background; other transports remain available.");
