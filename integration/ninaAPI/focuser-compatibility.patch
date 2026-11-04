@@ -1,0 +1,13 @@
+diff --git a/ninaAPI/WebService/V2/Equipment/Focuser.cs b/ninaAPI/WebService/V2/Equipment/Focuser.cs
+index 9a2bc45..2a131f9 100644
+--- a/ninaAPI/WebService/V2/Equipment/Focuser.cs
++++ b/ninaAPI/WebService/V2/Equipment/Focuser.cs
+@@ -346,7 +346,7 @@ namespace ninaAPI.WebService.V2
+ 
+             try
+             {
+-                if (AdvancedAPI.Controls.Focuser.GetType().HasMethod("SetReverse"))
++                if (AdvancedAPI.Controls.Focuser.GetType().GetMethod("SetReverse") != null)
+                 {
+                     AdvancedAPI.Controls.Focuser.GetType().GetMethod("SetReverse").Invoke(AdvancedAPI.Controls.Focuser, [reversing]);
+                     response.Response = "Reverse set";

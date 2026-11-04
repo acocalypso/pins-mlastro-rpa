@@ -1,0 +1,10 @@
+{
+  "id": "mlastro-rpa",
+  "name": "MLAstro RPA",
+  "description": "Connect an MLAstro One RPA and run automated polar alignment through PINS TPPA.",
+  "version": "0.2.0",
+  "author": "PINS MLAstro integration",
+  "defaultEnabled": false,
+  "enabled": true,
+  "isPins": true
+}

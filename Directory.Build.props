@@ -1,0 +1,5 @@
+<Project>
+  <PropertyGroup>
+    <PinsLibraries Condition="'$(PinsLibraries)' == ''">$(MSBuildThisFileDirectory)lib/pins</PinsLibraries>
+  </PropertyGroup>
+</Project>
