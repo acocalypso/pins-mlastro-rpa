@@ -12,3 +12,7 @@ Checked 2026-11-04 before packaging:
 - Archive manifest and archive entries checked. No actual equipment was contacted or moved while preparing this export.
 
 Complete automated sky alignment remains unvalidated. Publishing this reviewed snapshot does not imply upstream acceptance.
+
+## Pre-publication privacy review
+
+An independent QA agent reviewed the 60-file source snapshot and Git metadata. No apparent private credentials, installation-specific addresses, personal paths, logs, profiles or binaries were found. An additional scan of all reachable Git blobs found no credential-pattern or high-entropy candidates and verified the manifest against committed content. Commit metadata uses the intended public GitHub account and its noreply address. Public upstream attribution, synthetic test addresses and documented device defaults remain intentionally present. These checks reduce disclosure risk; they are not a guarantee against unknown secret formats or future changes.
