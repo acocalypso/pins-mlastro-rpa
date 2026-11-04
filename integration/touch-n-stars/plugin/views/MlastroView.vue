@@ -17,10 +17,11 @@
           >Connection
           <select
             :value="connection.transport"
-            :disabled="busy || status.connected"
+            :disabled="busy || !connectionReady || status.connected"
             class="field"
             @change="transport = $event.target.value"
           >
+            <option v-if="!connectionReady" value="">Checking connection…</option>
             <option value="wifi">Wi-Fi</option>
             <option value="usb">USB serial</option>
           </select>
@@ -36,7 +37,7 @@
             spellcheck="false"
           />
         </label>
-        <label v-else
+        <label v-else-if="connection.transport === 'usb'"
           >USB device
           <select
             :value="connection.address"
@@ -62,7 +63,9 @@
       <div class="flex flex-wrap gap-2">
         <button
           class="tns-btn-primary"
-          :disabled="busy || status.connected || (transport === 'usb' && usbLoading)"
+          :disabled="
+            busy || !connectionReady || status.connected || (transport === 'usb' && usbLoading)
+          "
           @click="connect"
         >
           Connect
@@ -81,7 +84,14 @@
         </button>
       </div>
       <p role="status">
-        {{ status.connected ? 'Connected' : 'Disconnected' }} ·
+        {{
+          !connectionReady
+            ? 'Checking connection…'
+            : status.connected
+              ? 'Connected'
+              : 'Disconnected'
+        }}
+        ·
         {{ status.deviceStatus || 'Waiting for device' }}
       </p>
       <p v-if="status.connected && status.usbDevicePath" class="text-sm text-gray-400">
@@ -355,6 +365,7 @@ import { connectionForDisplay } from '../connection';
 const rig = apiStore();
 const tppa = useTppaStore();
 const status = ref({});
+const connectionReady = computed(() => typeof status.value.connected === 'boolean');
 const manualStep = ref(30);
 const manualMode = ref('step');
 const jogActive = ref(false);
@@ -707,6 +718,7 @@ onMounted(() => {
     }
   });
   run(async () => {
+    status.value = await rpaRequest('status');
     const settings = await rpaRequest('settings');
     factor.value = settings.factor;
     maxStep.value = settings.maxStepArcMin;

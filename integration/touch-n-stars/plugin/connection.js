@@ -1,5 +1,6 @@
 // A connected device is authoritative; draft selections are only used while disconnected.
 export function connectionForDisplay(status, draft) {
+  if (typeof status.connected !== 'boolean') return { transport: '', address: '' };
   if (!status.connected) {
     return {
       transport: draft.transport,

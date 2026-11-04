@@ -4,6 +4,10 @@ import { connectionForDisplay } from '../connection.js';
 
 const defaults = { transport: 'wifi', address: 'mlastrorpa.local', usbSelection: 'auto' };
 
+test('unloaded status does not flash a draft Wi-Fi connection', () => {
+  assert.deepEqual(connectionForDisplay({}, defaults), { transport: '', address: '' });
+});
+
 test('reopening a connected USB panel overrides fresh Wi-Fi defaults', () => {
   assert.deepEqual(
     connectionForDisplay({ connected: true, usbDevicePath: '/dev/ttyUSB1' }, defaults),
