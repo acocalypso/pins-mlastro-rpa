@@ -165,6 +165,9 @@ public sealed class JogLease : IAsyncDisposable
                 await gate.WaitAsync(shutdown.Token);
                 try {
                     if (!Active) continue;
+                    // A global stop owns release/recovery once fenced. Repeated
+                    // watchdog retries must not invalidate every reconnect attempt.
+                    lock (callbackLock) if (fenced) continue;
                     try {
                         if (Stopwatch.GetElapsedTime(renewed).TotalMilliseconds >= 900) await StopLockedAsync();
                         else if (Stopwatch.GetElapsedTime(refreshed).TotalMilliseconds >= 250) {

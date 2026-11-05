@@ -67,6 +67,7 @@ public sealed class MLAstroPlugin : PluginBase
     public object GetStatus() => new {
         motionInhibited = motionSafety.Inhibited, motionState = motionSafety.State, motionFault = motionSafety.Fault,
         connected = IsHardwareConnected,
+        usbHeartbeatIsolated = Serial.IsUsbWorkerActive,
         transport = IsHardwareConnected ? (Wireless.IsConnected ? "wifi" : "usb") : null,
         connectionAddress = IsHardwareConnected ? (Wireless.IsConnected ? Wireless.ConfiguredAddress : Settings.ComPort) : null,
         usbDevicePath = IsHardwareConnected && Settings.TransportMode == MlastroTransportMode.Serial ? Settings.ComPort : null,
@@ -207,7 +208,14 @@ public sealed class MLAstroPlugin : PluginBase
                 await Task.Delay(250, token);
             }
             throw new InvalidOperationException($"No MLAstro firmware and telemetry confirmed on {address}.");
-        } catch { Serial.Disconnect(releaseControl: Serial.ControllerIdentityConfirmed); throw; }
+        } catch {
+            Serial.Disconnect(releaseControl: Serial.ControllerIdentityConfirmed);
+            // A failed identification must retire its worker before automatic discovery
+            // tries another port; otherwise the next healthy candidate looks busy.
+            var retireDeadline = DateTime.UtcNow.AddSeconds(4);
+            while (!Serial.WritesQuiescent && DateTime.UtcNow < retireDeadline) await Task.Delay(10);
+            throw;
+        }
     }
 
     public object GetCorrectionSettings() => new {
@@ -402,7 +410,7 @@ public sealed class MLAstroPlugin : PluginBase
             else {
                 motionSafety.CompleteStop(epoch);
                 if (!motionSafety.Inhibited) {
-                    try { jog.Unfence(); Serial.AllowMotion(); }
+                    try { jog.Unfence(); if (IsHardwareConnected) Serial.AllowMotion(); }
                     catch { LatchMotionFailure("Stop cleanup is not quiescent; reconnect before moving."); throw; }
                 }
             }

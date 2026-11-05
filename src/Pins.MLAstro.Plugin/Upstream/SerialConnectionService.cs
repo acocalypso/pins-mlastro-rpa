@@ -118,6 +118,10 @@ namespace MLAstroRPA.Services
         private bool _suspendSettingsSync;
         private volatile bool _applyingTelemetrySettings;
         private SerialPort _serialPort = null!;
+        private UsbWorkerClient? _usbWorker;
+        private readonly List<UsbWorkerClient> _usbWorkers = new();
+        private bool WorkerActive => _usbWorker?.IsConnected == true;
+        public bool IsUsbWorkerActive => WorkerActive;
         private string[] _availablePorts = Array.Empty<string>();
         private ComPortInfo[] _availableComPortInfos = Array.Empty<ComPortInfo>();
         private string _connectionStatus = "Disconnected";
@@ -188,15 +192,16 @@ namespace MLAstroRPA.Services
         private bool _motionBlocked;
         private int _cleanupInFlight;
         public bool MotionWritesBlocked { get { lock (_writeGate) return _motionBlocked; } }
-        public bool WritesQuiescent { get { lock (_writeGate) return _cleanupInFlight == 0 && Volatile.Read(ref _portOpenInProgress) == 0 && _writers.All(w => w.InFlight == 0) && (_wirelessProxy == null || _wirelessProxy.WritesQuiescent); } }
+        public bool WritesQuiescent { get { lock (_writeGate) return _cleanupInFlight == 0 && Volatile.Read(ref _portOpenInProgress) == 0 && _writers.All(w => w.InFlight == 0) && _usbWorkers.All(w => w.WritesQuiescent) && (_wirelessProxy == null || _wirelessProxy.WritesQuiescent); } }
         public void CancelPendingMotion() {
             CancellationTokenSource old;
             lock (_writeGate) { _motionBlocked = true; old = _motionCancellation; _cleanupInFlight++; }
             var cancellation = old.CancelAsync();
             _ = cancellation.ContinueWith(t => { _ = t.Exception; lock (_writeGate) _cleanupInFlight--; }, TaskScheduler.Default);
+            _usbWorker?.Fence();
             _wirelessProxy?.CancelPendingMotion();
         }
-        public void AllowMotion() { lock (_writeGate) { _motionCancellation = new CancellationTokenSource(); _motionBlocked = false; } _wirelessProxy?.AllowMotion(); }
+        public void AllowMotion() { if (_usbWorker != null && !_usbWorker.AllowMotion()) throw new InvalidOperationException("USB worker did not confirm motion readiness."); lock (_writeGate) { _motionCancellation = new CancellationTokenSource(); _motionBlocked = false; } _wirelessProxy?.AllowMotion(); }
         private static bool IsMotion(string text) => text.IndexOf("AAll:1", StringComparison.OrdinalIgnoreCase) >= 0 || text.IndexOf("AzAN:1", StringComparison.OrdinalIgnoreCase) >= 0 || text.IndexOf("AlAN:1", StringComparison.OrdinalIgnoreCase) >= 0 || ((text.IndexOf("MAz", StringComparison.OrdinalIgnoreCase) >= 0 || text.IndexOf("MAl", StringComparison.OrdinalIgnoreCase) >= 0) && text.IndexOf(":1", StringComparison.OrdinalIgnoreCase) >= 0);
         public Task<bool> SendMotionAsync(string text, CancellationToken token) => SendCommandAsync(text, token, true);
         public Task<bool> SendStatusQueryAsync(CancellationToken token) => SendCommandAsync(ConnectionCheckCommand, token, false);
@@ -212,6 +217,8 @@ namespace MLAstroRPA.Services
             var linked = motion ? CancellationTokenSource.CreateLinkedTokenSource(token, motionToken) : CancellationTokenSource.CreateLinkedTokenSource(token);
             try {
                 if (WirelessActive) return await _wirelessProxy!.SendCommandAsync(text, linked.Token, motion).ConfigureAwait(false);
+                var usb = _usbWorker;
+                if (usb != null) return await usb.SendAsync(text, motion, linked.Token).ConfigureAwait(false);
                 var writer = _writer;
                 var port = _serialPort;
                 if (writer == null || port == null) return false;
@@ -384,6 +391,12 @@ namespace MLAstroRPA.Services
         /// <summary>Sequential write through the write lock (two threads must not interleave a command).</summary>
         private void WriteBytes(byte[] data)
         {
+            var usb = _usbWorker;
+            if (usb != null) {
+                var workerText = Encoding.UTF8.GetString(data);
+                if (!usb.SendAsync(workerText, IsMotion(workerText), CancellationToken.None).GetAwaiter().GetResult()) throw new System.IO.IOException("USB worker did not confirm command.");
+                return;
+            }
             var port = _serialPort ?? throw new InvalidOperationException("Not connected.");
             var text = port.Encoding.GetString(data);
             var motion = IsMotion(text);
@@ -499,7 +512,7 @@ namespace MLAstroRPA.Services
             }
         }
 
-        public bool IsConnected => _serialPort?.IsOpen == true || WirelessActive;
+        public bool IsConnected => WorkerActive || _serialPort?.IsOpen == true || WirelessActive;
 
         /// <summary>
         /// Last telemetry parsed from the firmware (serial or wireless), or null before the first '?' reply.
@@ -511,7 +524,8 @@ namespace MLAstroRPA.Services
         /// <summary>Firmware STATUS token of the last telemetry ("READY", "MOVING", "ALIGNING", ...) - empty while unknown.</summary>
         public bool HasFreshTelemetry => LastTelemetry != null && Volatile.Read(ref _lastTelemetryStamp) != 0 &&
             Stopwatch.GetElapsedTime(Volatile.Read(ref _lastTelemetryStamp)).TotalMilliseconds <= TelemetryFreshMilliseconds;
-        public string DeviceStatus => LastTelemetry == null ? string.Empty : HasFreshTelemetry ? LastTelemetry.Status : "STALE";
+        public string DeviceStatus => LastTelemetry == null ? string.Empty : !HasFreshTelemetry ? "STALE" :
+            WorkerActive && LastTelemetry.Status == "READY" && !_usbWorker!.ReadyToMove ? "SETTLING" : LastTelemetry.Status;
 
         /// <summary>
         /// True when the axes are idle so another controller (TPPA) may take over: the link is up and the
@@ -542,7 +556,7 @@ namespace MLAstroRPA.Services
         /// </summary>
         public string LinkPath => WirelessActive
             ? _wirelessProxy!.LinkPath
-            : (_serialPort?.IsOpen == true ? "COM" : string.Empty);
+            : (WorkerActive || _serialPort?.IsOpen == true ? "COM" : string.Empty);
 
         // ==================================================================
         // FACADE cho transport WIRELESS (WebSocket)
@@ -1012,6 +1026,10 @@ namespace MLAstroRPA.Services
                 return false;
             }
 
+            if (OperatingSystem.IsLinux()) {
+                try { return await ConnectWorkerAsync(portName, startChecks).ConfigureAwait(false); }
+                finally { Interlocked.Exchange(ref _portOpenInProgress, 0); }
+            }
             SerialPort openingPort = null!;
             var cleanupAfterTimeout = false;
             try
@@ -1116,6 +1134,69 @@ namespace MLAstroRPA.Services
             }
         }
 
+        private async Task<bool> ConnectWorkerAsync(string path, bool startChecks)
+        {
+            Disconnect();
+            ClearSessionTelemetry();
+            FirmwareVersion = "unknown";
+            var worker = new UsbWorkerClient();
+            lock (_writeGate) { _usbWorker = worker; _usbWorkers.Add(worker); }
+            worker.LineReceived += (line, receivedAt) => RunForCurrentSession(() => ReferenceEquals(_usbWorker, worker), () => {
+                var now = Stopwatch.GetTimestamp();
+                if (receivedAt <= 0 || receivedAt > now) { ReportMotionFault("Invalid USB worker telemetry timestamp."); return; }
+                var age = Stopwatch.GetElapsedTime(receivedAt, now);
+                // Buffered pre-pause telemetry must never become a new READY sample.
+                if (line.StartsWith("<", StringComparison.Ordinal) && age.TotalMilliseconds > TelemetryFreshMilliseconds) return;
+                if (receivedAt > Volatile.Read(ref _lastRxStamp)) Volatile.Write(ref _lastRxStamp, receivedAt);
+                StartLinkWatchdog();
+                var before = LastTelemetry;
+                RouteLine(line);
+                if (!ReferenceEquals(before, LastTelemetry)) {
+                    Volatile.Write(ref _lastTelemetryStamp, receivedAt);
+                    LastTelemetryAt = DateTime.UtcNow - age;
+                }
+                RaiseExternalLine(line);
+            });
+            worker.Faulted += reason => {
+                if (!ReferenceEquals(_usbWorker, worker)) return;
+                ReportMotionFault(reason);
+                ConnectionStatus = "USB worker fault; reconnect required";
+                RaiseExternalState(false);
+            };
+            try {
+                if (!await worker.ConnectAsync(path, CancellationToken.None).ConfigureAwait(false)) throw new System.IO.IOException("USB worker did not open device.");
+                ConnectionStatus = $"Connected: {path} (isolated USB worker)";
+                HandshakeStatus = string.Empty;
+                _settings.ComPort = path;
+                PauseQueryGlobal = false;
+                if (startChecks) _ = StartHandshakeAndConnectionChecksAsync();
+                RaiseExternalState(true);
+                OnPropertyChanged(nameof(IsConnected));
+                Logger.Info("[MLAstro] Isolated USB worker opened device; camera processing does not own USB heartbeat.");
+                return true;
+            } catch (Exception ex) {
+                Logger.Warning($"[MLAstro] USB worker connect failed: {ex.Message}");
+                CloseUsbWorker();
+                ConnectionStatus = "USB worker connection failed";
+                return false;
+            }
+        }
+
+        private void CloseUsbWorker()
+        {
+            UsbWorkerClient? worker;
+            lock (_writeGate) {
+                worker = _usbWorker; _usbWorker = null;
+                if (worker != null) _cleanupInFlight++;
+            }
+            if (worker == null) return;
+            worker.Fence();
+            _ = worker.CloseAsync().ContinueWith(task => {
+                if (task.IsFaulted) Logger.Error(task.Exception);
+                lock (_writeGate) _cleanupInFlight--;
+            }, TaskScheduler.Default);
+        }
+
         public bool SendHex(string hexText)
         {
             if (!IsConnected)
@@ -1148,7 +1229,7 @@ namespace MLAstroRPA.Services
                     .ToArray();
 
                 WriteBytes(data);
-                AppendTerminalEntry(SerialTerminalEntry.Sent(data, _serialPort.Encoding, HexDisplay));
+                AppendTerminalEntry(SerialTerminalEntry.Sent(data, Encoding.UTF8, HexDisplay));
                 return true;
             }
             catch (Exception ex)
@@ -1190,6 +1271,15 @@ namespace MLAstroRPA.Services
             // MLAstro closes the port (possibly in the middle of a TPPA borrow): CLEAR the global poll pause so
             // the next connection polls "?" normally (not stuck by the earlier borrow).
             PauseQueryGlobal = false;
+
+            if (_usbWorker != null) {
+                CloseUsbWorker();
+                StopConnectionCheckTimer();
+                ResetPendingHandshakeState(); ResetErrorState();
+                ConnectionStatus = "Disconnected"; HandshakeStatus = string.Empty;
+                OnPropertyChanged(nameof(IsConnected)); RaiseExternalState(false);
+                return;
+            }
 
             if (_serialPort == null)
             {
@@ -1283,9 +1373,9 @@ namespace MLAstroRPA.Services
 
             try
             {
-                var data = _serialPort.Encoding.GetBytes(text);
+                var data = Encoding.UTF8.GetBytes(text);
                 WriteBytes(data);
-                AppendTerminalEntry(SerialTerminalEntry.Sent(data, _serialPort.Encoding, HexDisplay));
+                AppendTerminalEntry(SerialTerminalEntry.Sent(data, Encoding.UTF8, HexDisplay));
 
                 // Log sent commands (exclude telemetry query for cleaner logs)
                 if (!text.Equals("?\n"))
@@ -1447,7 +1537,7 @@ namespace MLAstroRPA.Services
                 }
 
                 TouchLinkAlive();   // feeds the watchdog: data just arrived from the device over COM
-                var receivedText = _serialPort.Encoding.GetString(buffer);
+                var receivedText = Encoding.UTF8.GetString(buffer);
 
                 // Frame the incoming stream by newline and classify each complete line into:
                 //  1) Telemetry (<...), 2) pending command answer (ok/error), 3) spontaneous firmware responses.
@@ -1464,7 +1554,7 @@ namespace MLAstroRPA.Services
                     if (line.Length > 0)
                     {
                         AppendTerminalEntry(SerialTerminalEntry.Received(
-                            _serialPort.Encoding.GetBytes(line), _serialPort.Encoding, HexDisplay));
+                            Encoding.UTF8.GetBytes(line), Encoding.UTF8, HexDisplay));
                         RouteLine(line);
                         RaiseExternalLine(line);
                     }
@@ -1476,7 +1566,7 @@ namespace MLAstroRPA.Services
                 if (_lineBuffer.Length > MaxPendingLineCharacters)
                 {
                     AppendTerminalEntry(SerialTerminalEntry.Received(
-                        _serialPort.Encoding.GetBytes(_lineBuffer.ToString()), _serialPort.Encoding, HexDisplay));
+                        Encoding.UTF8.GetBytes(_lineBuffer.ToString()), Encoding.UTF8, HexDisplay));
                     _lineBuffer.Clear();
                 }
             }
@@ -1759,6 +1849,7 @@ namespace MLAstroRPA.Services
 
         private void StartConnectionCheckTimer()
         {
+            if (WorkerActive) return; // Physical polling and freshness supervision live in the child.
             if (_connectionCheckTimer != null)
             {
                 return;
@@ -1835,6 +1926,7 @@ namespace MLAstroRPA.Services
 
             try
             {
+                if (WorkerActive) return; // Parent GC/camera pauses do not describe child link health.
                 if (!IsConnected)
                 {
                     return;
@@ -1996,7 +2088,7 @@ namespace MLAstroRPA.Services
             await _serialOperationSemaphore.WaitAsync().ConfigureAwait(false);
             try
             {
-                if (!IsConnected || _serialPort == null)
+                if (!IsConnected || (_serialPort == null && !WorkerActive))
                 {
                     return false;
                 }
@@ -2007,9 +2099,9 @@ namespace MLAstroRPA.Services
                     _pendingCommandTcs = pending;
                 }
 
-                var data = _serialPort.Encoding.GetBytes(text);
+                var data = Encoding.UTF8.GetBytes(text);
                 if (!await SendCommandAsync(text, CancellationToken.None, IsMotion(text)).ConfigureAwait(false)) return false;
-                AppendTerminalEntry(SerialTerminalEntry.Sent(data, _serialPort.Encoding, HexDisplay));
+                AppendTerminalEntry(SerialTerminalEntry.Sent(data, Encoding.UTF8, HexDisplay));
 
                 var completedTask = await Task.WhenAny(pending.Task, Task.Delay(HandshakeTimeoutMilliseconds)).ConfigureAwait(false);
 
@@ -2048,7 +2140,7 @@ namespace MLAstroRPA.Services
             await _serialOperationSemaphore.WaitAsync().ConfigureAwait(false);
             try
             {
-                if (!IsConnected || _serialPort == null)
+                if (!IsConnected || (_serialPort == null && !WorkerActive))
                 {
                     return false;
                 }
@@ -2059,9 +2151,9 @@ namespace MLAstroRPA.Services
                     _anyResponseTcs = any;
                 }
 
-                var data = _serialPort.Encoding.GetBytes(text);
+                var data = Encoding.UTF8.GetBytes(text);
                 if (!await SendCommandAsync(text, CancellationToken.None, IsMotion(text)).ConfigureAwait(false)) return false;
-                AppendTerminalEntry(SerialTerminalEntry.Sent(data, _serialPort.Encoding, HexDisplay));
+                AppendTerminalEntry(SerialTerminalEntry.Sent(data, Encoding.UTF8, HexDisplay));
 
                 var completedTask = await Task.WhenAny(any.Task, Task.Delay(HandshakeTimeoutMilliseconds)).ConfigureAwait(false);
                 return completedTask == any.Task;
@@ -2346,6 +2438,7 @@ namespace MLAstroRPA.Services
 
         private void DisconnectPortInstance()
         {
+            CloseUsbWorker();
             SerialPort closingPort;
             lock (_writeGate) {
                 closingPort = _serialPort;

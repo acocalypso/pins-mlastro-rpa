@@ -1,5 +1,11 @@
 # Architecture and behavior
 
+Linux USB uses a child process, `Pins.MLAstro.UsbWorker`, as the sole serial-port owner. PINS exchanges bounded JSON-line requests and timestamped device lines over private redirected pipes. Camera processing and PINS garbage collection cannot pause the child's USB heartbeat loop. The worker polls every 200 ms after controller identification; it does not alter the firmware communication watchdog.
+
+The child independently enforces controller identity, an allowed command set, session/generation fences, request expiry, fresh READY admission and physical completion/settling. During actual RPA movement, loss of parent liveness for 900 ms or stale telemetry triggers STOP and a latched fault. Idle parent pauses may last up to 30 seconds; parent death, pipe EOF or longer loss of liveness stops/releases the identified controller and exits. Fifteen seconds of idle device silence also retires the link. Reconnection never replays a movement.
+
+PINS discards buffered telemetry older than one second using the child's monotonic receive timestamp. A delayed parent timer cannot declare a healthy child link lost; physical link health is supervised in the child. Explicit Stop fences new/queued movement, and a fence acknowledgement waits for an already-dispatched write to drain. Faults require explicit reconnection with fresh READY telemetry. Driver failure can still make physical STOP unconfirmable; process retirement and the enabled firmware watchdog remain the final fallback.
+
 The MEF composition root is `MLAstroPlugin`; it owns the serial/Wi-Fi services, loopback control API, correction runner and single-session TPPA selection lifecycle. Its assembly GUID differs from the upstream Windows plugin. Do not run two controller owners against the same device.
 
 Touch-N-Stars calls ninaAPI's fixed `/v2/api/mlastro/*` routes. The relay calls `127.0.0.1:1891`; the local service rejects browser Origin headers. This is a local-development integration using the surrounding application's access controls, not a newly designed independent authentication system.

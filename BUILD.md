@@ -20,6 +20,24 @@ dotnet build tests/Pins.MLAstro.RelayCompile
 
 The plugin references the host's assemblies without copying them. `System.IO.Ports` must be supplied by a compatible PINS runtime. Building does not install, connect to or move equipment.
 
+Build the Linux ARM64 USB worker as a self-contained single executable:
+
+```sh
+dotnet publish src/Pins.MLAstro.UsbWorker -c Release -r linux-arm64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o artifacts/usb-worker
+```
+
+Install `Pins.MLAstro.UsbWorker` in `usb-worker/` beside the plugin DLL and make it executable. Keep only the executable there, not a tree of framework DLLs that a plugin loader could scan. `MLASTRO_USB_WORKER` overrides its path for testing or packaging. A missing worker is an explicit connection failure; the Linux plugin does not silently fall back to USB I/O inside PINS. Keep the RPA firmware communication watchdog enabled.
+
+The worker integration checks use private Linux pseudoterminals and never open physical equipment:
+
+```sh
+python3 tests/Pins.MLAstro.UsbWorkerChecks/worker_checks.py -- /absolute/path/to/Pins.MLAstro.UsbWorker
+dotnet publish tests/Pins.MLAstro.UsbWorkerChecks/ClientHarness -c Release -r linux-arm64 --self-contained true -o artifacts/client-harness
+python3 tests/Pins.MLAstro.UsbWorkerChecks/client_checks.py /absolute/path/to/ClientHarness /absolute/path/to/Pins.MLAstro.UsbWorker
+```
+
+The client checks pause only their disposable test process with SIGSTOP. Do not substitute the production PINS PID. Set `MLASTRO_USB_WORKER` when running full plugin checks if the worker is not installed beside their plugin DLL.
+
 The standalone adversarial safety checks need only the .NET SDK and PowerShell. They extract the current plugin methods and run with fake collaborators, plus the actual bounded writer:
 
 ```powershell
