@@ -57,8 +57,8 @@ static class WriterChecks
         } finally { releaseCallback.Set(); pending.TrySetResult(); }
         await Until(() => blocked.InFlight == 0, "blocked cancellation did not eventually drain");
 
-        var statusWriter = new BoundedCommandWriter(async (_, _) => await Task.Delay(400), () => true, () => { });
-        Check(await statusWriter.SendAsync(new byte[] { (byte)'?' }, CancellationToken.None, writeTimeout: TimeSpan.FromSeconds(1)),
+        var statusWriter = new BoundedCommandWriter(async (_, _) => await Task.Delay(1500), () => true, () => { });
+        Check(await statusWriter.SendAsync(new byte[] { (byte)'?' }, CancellationToken.None, writeTimeout: TimeSpan.FromSeconds(2)),
             "status query did not use its longer write budget");
         Check(!statusWriter.Faulted, "successful delayed query faulted writer");
         var motionWriter = new BoundedCommandWriter(async (_, _) => await Task.Delay(400), () => true, () => { });
@@ -71,11 +71,11 @@ static class WriterChecks
         var shared = new BoundedCommandWriter(async (bytes, _) => {
             var command = bytes.Span[0];
             order.Enqueue(command);
-            if (command == (byte)'?') { queryStarted.TrySetResult(); await Task.Delay(400); }
+            if (command == (byte)'?') { queryStarted.TrySetResult(); await Task.Delay(1500); }
         }, () => true, () => { });
-        var query = shared.SendAsync(new byte[] { (byte)'?' }, CancellationToken.None, writeTimeout: TimeSpan.FromSeconds(1));
+        var query = shared.SendAsync(new byte[] { (byte)'?' }, CancellationToken.None, writeTimeout: TimeSpan.FromSeconds(2));
         await queryStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
-        var stop = shared.SendAsync(new byte[] { (byte)'S' }, CancellationToken.None, queueTimeout: TimeSpan.FromMilliseconds(1200));
+        var stop = shared.SendAsync(new byte[] { (byte)'S' }, CancellationToken.None, queueTimeout: TimeSpan.FromMilliseconds(2200));
         Check(await query && await stop && order.SequenceEqual(new byte[] { (byte)'?', (byte)'S' }),
             "STOP did not acquire its separate queue budget after an in-flight query");
 

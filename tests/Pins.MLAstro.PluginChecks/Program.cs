@@ -36,7 +36,7 @@ static class PluginChecks
         if (settings.MlaHost != "mlastrorpa.local") throw new Exception("Settings did not round-trip.");
         Console.WriteLine("PASS settings round-trip in isolated in-memory profile");
         UsbChecks.Metadata();
-        using (var usbDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(60)))
+        using (var usbDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(90)))
             UsbChecks.Serial(plugin, usbDeadline.Token).GetAwaiter().GetResult();
         var fallbackStops = 0;
         var hung = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

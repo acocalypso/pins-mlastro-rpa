@@ -41,8 +41,8 @@ namespace MLAstroRPA.Services
         private const int ScanReadTimeoutMilliseconds = 400;
         private const int ScanWriteTimeoutMilliseconds = 300;
         private const int TelemetryFreshMilliseconds = 1000;
-        private static readonly TimeSpan StatusWriteBudget = TimeSpan.FromMilliseconds(1000);
-        private static readonly TimeSpan StopQueueBudget = TimeSpan.FromMilliseconds(1200);
+        private static readonly TimeSpan StatusWriteBudget = TimeSpan.FromMilliseconds(2000);
+        private static readonly TimeSpan StopQueueBudget = TimeSpan.FromMilliseconds(2200);
         private int _stopsPending;
         public const int HandshakeTimeoutMinMilliseconds = 100;
         public const int HandshakeTimeoutMaxMilliseconds = 5000;
@@ -140,6 +140,7 @@ namespace MLAstroRPA.Services
         // continuously) counts as a LOST LINK, so it disconnects itself (toast + system log line).
         // quyền TPPA do Disconnect() -> RaiseExternalState(false) lo sẵn).
         private const int LinkWatchdogTimeoutMs = 5000;
+        private const int SerialSilenceTimeoutMs = 15000;
         private System.Timers.Timer? _linkWatchdogTimer;
         private DateTime _lastRxUtc = DateTime.UtcNow;
         private long _lastRxStamp = Stopwatch.GetTimestamp();
@@ -1853,7 +1854,7 @@ namespace MLAstroRPA.Services
                 }
 
                 var silentFor = Stopwatch.GetElapsedTime(Volatile.Read(ref _lastRxStamp));
-                if (silentFor.TotalMilliseconds < LinkWatchdogTimeoutMs)
+                if (silentFor.TotalMilliseconds < (WirelessActive ? LinkWatchdogTimeoutMs : SerialSilenceTimeoutMs))
                 {
                     return;
                 }
@@ -1941,7 +1942,7 @@ namespace MLAstroRPA.Services
                     return;
                 }
                 var silentFor = Stopwatch.GetElapsedTime(Volatile.Read(ref _lastRxStamp));
-                if (silentFor.TotalMilliseconds >= LinkWatchdogTimeoutMs) {
+                if (silentFor.TotalMilliseconds >= SerialSilenceTimeoutMs) {
                     Logger.Warning($"[MLAstro] No serial data for {silentFor.TotalSeconds:0.0}s - auto disconnecting");
                     Disconnect();
                 }

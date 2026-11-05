@@ -57,19 +57,19 @@ static class UsbChecks
         }
         using (var firmware = new PtyFirmware(true)) {
             if (!await plugin.ConnectAsync(false, firmware.Path, token)) throw new Exception("Virtual USB gap-test connection failed");
-            firmware.PauseResponses(2000);
+            firmware.PauseResponses(7000);
             await Task.Delay(1300, token);
             if (!plugin.Serial.IsConnected || plugin.Serial.IsDeviceIdle) throw new Exception("Stale telemetry remained idle or disconnected during short gap");
             try { await plugin.ManualMoveAsync("az", 1, 10); throw new Exception("Manual movement accepted stale telemetry"); } catch (InvalidOperationException) { }
             try { await plugin.SetAutomationAsync(true); throw new Exception("Automation accepted stale telemetry"); } catch (InvalidOperationException) { }
             var readyDeadline = System.Diagnostics.Stopwatch.StartNew();
-            while (!plugin.Serial.IsDeviceIdle && readyDeadline.Elapsed < TimeSpan.FromSeconds(3)) await Task.Delay(50, token);
+            while (!plugin.Serial.IsDeviceIdle && readyDeadline.Elapsed < TimeSpan.FromSeconds(8)) await Task.Delay(50, token);
             if (!plugin.Serial.IsConnected || !plugin.Serial.IsDeviceIdle || firmware.MovementCommands != 0) throw new Exception("Short telemetry gap did not recover safely");
-            Console.WriteLine("PASS short USB silence blocks motion and recovers with fresh READY without disconnect");
-            firmware.PauseResponses(8000);
+            Console.WriteLine("PASS seven-second USB silence blocks motion and recovers with fresh READY without disconnect");
+            firmware.PauseResponses(25000);
             var disconnectDeadline = System.Diagnostics.Stopwatch.StartNew();
-            while (plugin.Serial.IsConnected && disconnectDeadline.Elapsed < TimeSpan.FromSeconds(7)) await Task.Delay(50, token);
-            if (plugin.Serial.IsConnected || disconnectDeadline.Elapsed < TimeSpan.FromSeconds(4.5)) throw new Exception("Long USB silence did not disconnect after the timeout");
+            while (plugin.Serial.IsConnected && disconnectDeadline.Elapsed < TimeSpan.FromSeconds(18)) await Task.Delay(50, token);
+            if (plugin.Serial.IsConnected || disconnectDeadline.Elapsed < TimeSpan.FromSeconds(14.5)) throw new Exception("Long USB silence did not disconnect after the timeout");
             var cleanupDeadline = System.Diagnostics.Stopwatch.StartNew();
             while (!plugin.Serial.WritesQuiescent && cleanupDeadline.Elapsed < TimeSpan.FromSeconds(3)) await Task.Delay(50, token);
             if (!plugin.Serial.WritesQuiescent) throw new Exception("USB cleanup did not quiesce after timeout");
