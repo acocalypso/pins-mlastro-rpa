@@ -36,7 +36,7 @@ static class PluginChecks
         if (settings.MlaHost != "mlastrorpa.local") throw new Exception("Settings did not round-trip.");
         Console.WriteLine("PASS settings round-trip in isolated in-memory profile");
         UsbChecks.Metadata();
-        using (var usbDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(20)))
+        using (var usbDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(60)))
             UsbChecks.Serial(plugin, usbDeadline.Token).GetAwaiter().GetResult();
         var fallbackStops = 0;
         var hung = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -121,7 +121,7 @@ static class PluginChecks
         using (var firmware = new VirtualRpa())
         {
             settings.MlaPort = 1892;
-            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(40));
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
             if (!plugin.ConnectAsync(true, "127.0.0.1", deadline.Token).GetAwaiter().GetResult()) throw new Exception("Simulated handshake failed");
             Console.WriteLine("PASS virtual Wi-Fi firmware handshake");
             Task.Delay(250, deadline.Token).GetAwaiter().GetResult();
@@ -196,7 +196,30 @@ static class PluginChecks
             plugin.StopAsync().GetAwaiter().GetResult();
             firmware.StopReceived.Task.WaitAsync(deadline.Token).GetAwaiter().GetResult();
             Console.WriteLine("PASS stop reaches virtual busy hardware");
+            Task.Delay(250, deadline.Token).GetAwaiter().GetResult();
+            var priorStops = firmware.StopCount;
+            var staleLease = plugin.StartJogAsync("az", 1).GetAwaiter().GetResult();
+            firmware.PauseTelemetry = true;
+            var staleWatch = System.Diagnostics.Stopwatch.StartNew();
+            while (!serial.MotionWritesBlocked && staleWatch.Elapsed < TimeSpan.FromSeconds(4)) {
+                Task.Delay(150, deadline.Token).GetAwaiter().GetResult();
+                try { plugin.RenewJogAsync(staleLease).GetAwaiter().GetResult(); } catch (InvalidOperationException) { }
+            }
+            if (!serial.MotionWritesBlocked || firmware.UnrelatedFrames < 5 || !serial.IsConnected)
+                throw new Exception("Wi-Fi active jog did not fence on stale telemetry while unrelated traffic continued");
+            var stopWatch = System.Diagnostics.Stopwatch.StartNew();
+            while (firmware.StopCount == priorStops && stopWatch.Elapsed < TimeSpan.FromSeconds(3)) Task.Delay(20, deadline.Token).GetAwaiter().GetResult();
+            if (firmware.StopCount == priorStops) throw new Exception("Wi-Fi stale active jog did not send general STOP");
+            firmware.PauseTelemetry = false;
+            try { plugin.DisconnectAsync().GetAwaiter().GetResult(); } catch (InvalidOperationException) { }
+            Console.WriteLine("PASS Wi-Fi active jog fences and stops on stale telemetry despite unrelated inbound traffic");
+        }
+        using (var recoveryFirmware = new VirtualRpa()) {
+            using var recoveryDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            if (!plugin.ConnectAsync(true, "127.0.0.1", recoveryDeadline.Token).GetAwaiter().GetResult() || serial.MotionWritesBlocked || !serial.IsDeviceIdle)
+                throw new Exception("Wi-Fi stale-telemetry verified reconnect failed");
             plugin.DisconnectAsync().GetAwaiter().GetResult();
+            Console.WriteLine("PASS verified Wi-Fi reconnect clears stale-telemetry fence");
         }
         plugin.Teardown().GetAwaiter().GetResult();
         Console.WriteLine("PASS plugin teardown");

@@ -56,5 +56,28 @@ static class WriterChecks
             Check(!await blocked.SendAsync(new byte[] { 5 }, CancellationToken.None), "canceled writer admitted a command");
         } finally { releaseCallback.Set(); pending.TrySetResult(); }
         await Until(() => blocked.InFlight == 0, "blocked cancellation did not eventually drain");
+
+        var statusWriter = new BoundedCommandWriter(async (_, _) => await Task.Delay(400), () => true, () => { });
+        Check(await statusWriter.SendAsync(new byte[] { (byte)'?' }, CancellationToken.None, writeTimeout: TimeSpan.FromSeconds(1)),
+            "status query did not use its longer write budget");
+        Check(!statusWriter.Faulted, "successful delayed query faulted writer");
+        var motionWriter = new BoundedCommandWriter(async (_, _) => await Task.Delay(400), () => true, () => { });
+        Check(!await motionWriter.SendAsync(new byte[] { 1 }, CancellationToken.None) && motionWriter.Faulted,
+            "default motion write deadline was relaxed");
+        await Until(() => motionWriter.InFlight == 0, "timed-out default writer did not drain");
+
+        var order = new System.Collections.Concurrent.ConcurrentQueue<byte>();
+        var queryStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var shared = new BoundedCommandWriter(async (bytes, _) => {
+            var command = bytes.Span[0];
+            order.Enqueue(command);
+            if (command == (byte)'?') { queryStarted.TrySetResult(); await Task.Delay(400); }
+        }, () => true, () => { });
+        var query = shared.SendAsync(new byte[] { (byte)'?' }, CancellationToken.None, writeTimeout: TimeSpan.FromSeconds(1));
+        await queryStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        var stop = shared.SendAsync(new byte[] { (byte)'S' }, CancellationToken.None, queueTimeout: TimeSpan.FromMilliseconds(1200));
+        Check(await query && await stop && order.SequenceEqual(new byte[] { (byte)'?', (byte)'S' }),
+            "STOP did not acquire its separate queue budget after an in-flight query");
+
     }
 }

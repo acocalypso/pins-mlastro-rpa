@@ -39,10 +39,13 @@ public sealed class BoundedCommandWriter
             CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
     }
 
-    public async Task<bool> SendAsync(ReadOnlyMemory<byte> bytes, CancellationToken token, Func<bool> allowed = null)
+    public async Task<bool> SendAsync(ReadOnlyMemory<byte> bytes, CancellationToken token, Func<bool> allowed = null, TimeSpan? writeTimeout = null, TimeSpan? queueTimeout = null)
     {
+        var budget = writeTimeout ?? timeout;
+        if (budget <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(writeTimeout));
+        if (queueTimeout.HasValue && queueTimeout <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(queueTimeout));
         var deadline = CancellationTokenSource.CreateLinkedTokenSource(token, closed.Token);
-        try { return await SendCoreAsync(bytes, deadline, allowed).ConfigureAwait(false); }
+        try { return await SendCoreAsync(bytes, deadline, allowed, budget, queueTimeout ?? budget).ConfigureAwait(false); }
         finally {
             // A driver's cancellation callback can block disposal of linked registrations.
             // Keep that cleanup visible to reconnect checks without trapping the caller.
@@ -51,9 +54,9 @@ public sealed class BoundedCommandWriter
         }
     }
 
-    private async Task<bool> SendCoreAsync(ReadOnlyMemory<byte> bytes, CancellationTokenSource deadline, Func<bool> allowed)
+    private async Task<bool> SendCoreAsync(ReadOnlyMemory<byte> bytes, CancellationTokenSource deadline, Func<bool> allowed, TimeSpan budget, TimeSpan queueBudget)
     {
-        deadline.CancelAfter(timeout);
+        deadline.CancelAfter(queueBudget);
         var operationToken = deadline.Token;
         while (!gate.Wait(0))
         {
@@ -64,6 +67,9 @@ public sealed class BoundedCommandWriter
         var releaseHere = true;
         try
         {
+            // STOP can wait for a bounded status write to drain without extending
+            // its own I/O deadline. Motion uses its original short total budget.
+            if (queueBudget != budget) deadline.CancelAfter(budget);
             if (!CanStart(operationToken, allowed)) return false;
             // This lock makes timeout and dispatch mutually exclusive: if timeout wins,
             // a delayed thread-pool worker is forbidden from starting the write.

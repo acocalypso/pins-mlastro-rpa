@@ -34,6 +34,7 @@ public sealed class MLAstroPlugin : PluginBase
     private int stopGeneration;
     private readonly MotionSafety motionSafety = new();
     private int handlingMotionFault;
+    private int activeStops;
     private readonly object motionGate = new();
     private readonly JogLease jog;
     private DateTime connectedAt;
@@ -133,8 +134,11 @@ public sealed class MLAstroPlugin : PluginBase
             if (!automaticUsb && string.IsNullOrWhiteSpace(address)) throw new ArgumentException("A device address is required.");
             if (wifi && Uri.CheckHostName(address) == UriHostNameType.Unknown) throw new ArgumentException("Use a hostname or IP address without a scheme or path.");
             if (!wifi && !automaticUsb && !address.StartsWith("/dev/", StringComparison.Ordinal)) throw new ArgumentException("Choose a Linux /dev/ serial device.");
+            var stopDeadline = DateTime.UtcNow.AddSeconds(6);
+            while (Volatile.Read(ref activeStops) != 0 && DateTime.UtcNow < stopDeadline) await Task.Delay(10, token);
+            if (Volatile.Read(ref activeStops) != 0) throw new InvalidOperationException("Stop cleanup is still running; reconnect later.");
             lock (motionGate) {
-                if (generation != Volatile.Read(ref stopGeneration)) throw new OperationCanceledException("Connection cancelled by Stop.");
+                if (generation != Volatile.Read(ref stopGeneration) || Volatile.Read(ref activeStops) != 0) throw new OperationCanceledException("Connection cancelled by Stop.");
                 recoveryEpoch = motionSafety.BeginStop();
                 recoveryStarted = true;
                 Serial.CancelPendingMotion();
@@ -191,7 +195,7 @@ public sealed class MLAstroPlugin : PluginBase
                 if (generation != Volatile.Read(ref stopGeneration)) throw new OperationCanceledException("Connection cancelled by Stop.");
                 if (!Serial.ControllerIdentityConfirmed) await Serial.SendHandshakeAsync().WaitAsync(token);
                 if (Serial.ControllerIdentityConfirmed) {
-                    Serial.Send("?\n");
+                    if (!await Serial.SendStatusQueryAsync(token)) throw new InvalidOperationException("Status query was not confirmed during USB identification.");
                     await Task.Delay(150, token);
                     if (Serial.LastTelemetryAt >= connectedAt && Serial.LastTelemetry != null) {
                         if (generation != Volatile.Read(ref stopGeneration)) throw new OperationCanceledException("Connection cancelled by Stop.");
@@ -355,6 +359,8 @@ public sealed class MLAstroPlugin : PluginBase
     /// <summary>Fence movement first; axis release, general STOP and cleanup are independent.</summary>
     public async Task StopAsync()
     {
+        Interlocked.Increment(ref activeStops);
+        try {
         long epoch;
         bool hadActivity;
         lock (motionGate) {
@@ -402,6 +408,7 @@ public sealed class MLAstroPlugin : PluginBase
             }
         }
         if (motionSafety.Inhibited) throw new InvalidOperationException(motionSafety.Fault ?? "Stop is still in progress.");
+        } finally { Interlocked.Decrement(ref activeStops); }
     }
 
     public async Task DisconnectAsync()
@@ -565,6 +572,10 @@ public sealed class MLAstroPlugin : PluginBase
         jog.Faulted += reason => { _ = HandleMotionFailureAsync(reason); };
         hardware.StopFailed += reason => LatchMotionFailure(reason);
         Serial.MotionFaulted += reason => { _ = HandleMotionFailureAsync(reason); };
+        Serial.TelemetryStale += () => {
+            if (!motionSafety.Inhibited && (manualMoveActive || jog.Active || Runner.IsSessionRunning || Settings.TppaBrokerEnabled))
+                _ = HandleMotionFailureAsync("Telemetry became stale during an operation; stopped and inhibited until reconnection.");
+        };
         api = new ControlApi(this, controlPort);
         Logger.Info("[MLAstro Linux] Loaded; hardware connection and automation remain disabled until explicitly enabled.");
     }

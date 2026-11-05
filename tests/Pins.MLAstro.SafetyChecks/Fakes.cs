@@ -4,6 +4,7 @@ partial class PluginHarness
 {
     private readonly SemaphoreSlim controlGate = new(1, 1);
     private int stopGeneration;
+    private int activeStops;
     private readonly MotionSafety motionSafety = new();
     private readonly FakeSerial Serial = new();
     private readonly FakeJog jog = new();

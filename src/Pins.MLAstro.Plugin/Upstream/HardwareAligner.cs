@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
@@ -46,11 +47,11 @@ namespace MLAstroRPA.Broker
 
         /// <summary>When the firmware started reporting the axes idle (null while they are not idle).</summary>
         private DateTime? idleSinceUtc;
+        private long lastTelemetryStamp;
 
         /// <summary>
         /// True when the axes are idle so TPPA may take over: the link is up and the firmware has been reporting READY
-        /// for the whole debounce. An unknown status counts as ready so a missing poll never blocks a run, but that
-        /// idle still has to hold for the debounce first.
+        /// for the whole debounce, with fresh explicit telemetry throughout.
         /// </summary>
         public bool IsHardwareReady {
             get {
@@ -129,6 +130,10 @@ namespace MLAstroRPA.Broker
 
         private void OnTelemetryDataReceived(object sender, TelemetryDataEventArgs e)
         {
+            var stamp = Stopwatch.GetTimestamp();
+            if (lastTelemetryStamp != 0 && Stopwatch.GetElapsedTime(lastTelemetryStamp, stamp).TotalSeconds > 1)
+                idleSinceUtc = null;
+            lastTelemetryStamp = stamp;
             // The axes count as idle from the first line that reports them idle, and stop counting the moment one
             // reports them busy, so IsHardwareReady can require the idle state to have held for the debounce.
             if (!_serial.IsConnected || !_serial.IsDeviceIdle)
@@ -174,9 +179,9 @@ namespace MLAstroRPA.Broker
         {
             if (plan == null || !plan.HasMove) { return true; }
 
-            if (!_serial.IsConnected)
+            if (!_serial.IsConnected || !_serial.HasFreshTelemetry)
             {
-                Logger.Warning("[MLAstro][Broker] Cannot align: the hardware link is not connected.");
+                Logger.Warning("[MLAstro][Broker] Cannot align: the hardware link is disconnected or telemetry is stale.");
                 return false;
             }
 

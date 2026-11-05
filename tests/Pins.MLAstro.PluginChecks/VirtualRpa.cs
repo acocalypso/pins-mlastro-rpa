@@ -12,6 +12,8 @@ sealed class VirtualRpa : IDisposable
     private readonly Task worker;
     private WebSocket? socket;
     public volatile string Status = "READY";
+    public volatile bool PauseTelemetry;
+    public int StopCount, UnrelatedFrames;
     public int AlignmentCount;
     public int JogCount, JogStops;
     public int Speed = 1, AzBack = 77917, AltBack = 1000;
@@ -41,7 +43,11 @@ sealed class VirtualRpa : IDisposable
             await SendAsync(new { fw_ver = "firmware 1.13.0", speedLevel = Speed, backlash = new { enable = Backlash, az_steps = AzBack, alt_steps = AltBack }, role = "master", serial_locked = false });
             telemetry = Task.Run(async () => {
                 while (!shutdown.IsCancellationRequested) {
-                    await SendAsync(new { sys_status = Status, pos_az = 0.0, pos_alt = 0.0 });
+                    if (PauseTelemetry) {
+                        // A log plus harmless error-state frame exercises inbound traffic without position telemetry.
+                        await SendAsync(new { log = "simulated background event", error = "ERROR:Simulated:0" });
+                        Interlocked.Increment(ref UnrelatedFrames);
+                    } else await SendAsync(new { sys_status = Status, pos_az = 0.0, pos_alt = 0.0 });
                     await Task.Delay(100, shutdown.Token);
                 }
             });
@@ -57,7 +63,7 @@ sealed class VirtualRpa : IDisposable
                     case "handshake": await SendAsync(new { cmd = "handshakeResult", result = true, fw_ver = "firmware 1.13.0", link = "STA" }); break;
                     case "align": Status = "MOVING"; Interlocked.Increment(ref AlignmentCount); AlignmentReceived.TrySetResult(); break;
                     case "moveRelative": LastManualArcseconds = doc.RootElement.GetProperty("data").GetProperty("angle").GetDouble() * 3600; Status = "MOVING"; break;
-                    case "stop": case "forceStop": Status = "READY"; StopReceived.TrySetResult(); break;
+                    case "stop": case "forceStop": Status = "READY"; Interlocked.Increment(ref StopCount); StopReceived.TrySetResult(); break;
                     case "move": Status = "MOVING"; Interlocked.Increment(ref JogCount); break;
                     case "stopMove": Status = "READY"; Interlocked.Increment(ref JogStops); break;
                     case "speedLevel": Speed = doc.RootElement.GetProperty("data").GetProperty("level").GetInt32(); await SendAsync(new { speedLevel = Speed }); break;

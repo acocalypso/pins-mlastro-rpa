@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
@@ -39,7 +40,10 @@ namespace MLAstroRPA.Services
         // probing a long COM list stays fast.
         private const int ScanReadTimeoutMilliseconds = 400;
         private const int ScanWriteTimeoutMilliseconds = 300;
-        private const int ConnectionCheckFailThreshold = 3;
+        private const int TelemetryFreshMilliseconds = 1000;
+        private static readonly TimeSpan StatusWriteBudget = TimeSpan.FromMilliseconds(1000);
+        private static readonly TimeSpan StopQueueBudget = TimeSpan.FromMilliseconds(1200);
+        private int _stopsPending;
         public const int HandshakeTimeoutMinMilliseconds = 100;
         public const int HandshakeTimeoutMaxMilliseconds = 5000;
 
@@ -128,7 +132,6 @@ namespace MLAstroRPA.Services
         private System.Timers.Timer? _connectionCheckTimer;
         private int _connectionCheckInProgress;
         private int _portOpenInProgress;
-        private int _connectionCheckFailures;
         
 
         // ===== LINK WATCHDOG (PC client) =====
@@ -139,6 +142,8 @@ namespace MLAstroRPA.Services
         private const int LinkWatchdogTimeoutMs = 5000;
         private System.Timers.Timer? _linkWatchdogTimer;
         private DateTime _lastRxUtc = DateTime.UtcNow;
+        private long _lastRxStamp = Stopwatch.GetTimestamp();
+        private long _lastTelemetryStamp;
         private int _linkWatchdogChecking;
 
         public event PropertyChangedEventHandler? PropertyChanged;
@@ -173,6 +178,7 @@ namespace MLAstroRPA.Services
         // (Methods + Action instead of plain events keep reflection access easy for other plugins.)
         // =====================================================================
         public event Action<string>? MotionFaulted;
+        public event Action? TelemetryStale;
         public void ReportMotionFault(string reason) { CancelPendingMotion(); try { MotionFaulted?.Invoke(reason); } catch { } }
         private readonly object _writeGate = new();
         private readonly List<BoundedCommandWriter> _writers = new();
@@ -192,7 +198,12 @@ namespace MLAstroRPA.Services
         public void AllowMotion() { lock (_writeGate) { _motionCancellation = new CancellationTokenSource(); _motionBlocked = false; } _wirelessProxy?.AllowMotion(); }
         private static bool IsMotion(string text) => text.IndexOf("AAll:1", StringComparison.OrdinalIgnoreCase) >= 0 || text.IndexOf("AzAN:1", StringComparison.OrdinalIgnoreCase) >= 0 || text.IndexOf("AlAN:1", StringComparison.OrdinalIgnoreCase) >= 0 || ((text.IndexOf("MAz", StringComparison.OrdinalIgnoreCase) >= 0 || text.IndexOf("MAl", StringComparison.OrdinalIgnoreCase) >= 0) && text.IndexOf(":1", StringComparison.OrdinalIgnoreCase) >= 0);
         public Task<bool> SendMotionAsync(string text, CancellationToken token) => SendCommandAsync(text, token, true);
-        public Task<bool> SendStopAsync(CancellationToken token) => SendCommandAsync("STOP:1\n", token, false);
+        public Task<bool> SendStatusQueryAsync(CancellationToken token) => SendCommandAsync(ConnectionCheckCommand, token, false);
+        public async Task<bool> SendStopAsync(CancellationToken token) {
+            Interlocked.Increment(ref _stopsPending);
+            try { return await SendCommandAsync("STOP:1\n", token, false).ConfigureAwait(false); }
+            finally { Interlocked.Decrement(ref _stopsPending); }
+        }
         private async Task<bool> SendCommandAsync(string text, CancellationToken token, bool motion)
         {
             CancellationToken motionToken;
@@ -203,7 +214,9 @@ namespace MLAstroRPA.Services
                 var writer = _writer;
                 var port = _serialPort;
                 if (writer == null || port == null) return false;
-                return await writer.SendAsync(port.Encoding.GetBytes(text), linked.Token, motion ? () => !MotionWritesBlocked : null).ConfigureAwait(false);
+                return await writer.SendAsync(port.Encoding.GetBytes(text), linked.Token, motion ? () => !MotionWritesBlocked : null,
+                text.Trim() == "?" ? StatusWriteBudget : null,
+                text.Trim() == "STOP:1" ? StopQueueBudget : null).ConfigureAwait(false);
             } finally {
                 lock (_writeGate) _cleanupInFlight++;
                 _ = Task.Run(() => { try { linked.Dispose(); } finally { lock (_writeGate) _cleanupInFlight--; } });
@@ -495,11 +508,13 @@ namespace MLAstroRPA.Services
         public DateTime LastTelemetryAt { get; private set; }
 
         /// <summary>Firmware STATUS token of the last telemetry ("READY", "MOVING", "ALIGNING", ...) - empty while unknown.</summary>
-        public string DeviceStatus => LastTelemetry?.Status ?? string.Empty;
+        public bool HasFreshTelemetry => LastTelemetry != null && Volatile.Read(ref _lastTelemetryStamp) != 0 &&
+            Stopwatch.GetElapsedTime(Volatile.Read(ref _lastTelemetryStamp)).TotalMilliseconds <= TelemetryFreshMilliseconds;
+        public string DeviceStatus => LastTelemetry == null ? string.Empty : HasFreshTelemetry ? LastTelemetry.Status : "STALE";
 
         /// <summary>
         /// True when the axes are idle so another controller (TPPA) may take over: the link is up and the
-        /// firmware reports READY. An unknown status counts as ready, so a missing poll never blocks a run.
+        /// firmware reports READY in telemetry no older than one second.
         /// </summary>
         public bool IsDeviceIdle
         {
@@ -1060,7 +1075,6 @@ namespace MLAstroRPA.Services
 
                 ConnectionStatus = $"Connected: {portName} @ {baudRate} (8-N-1)";
                 HandshakeStatus = string.Empty;
-                _connectionCheckFailures = 0;
                 AppendTerminalEntry(SerialTerminalEntry.Connected(ConnectionStatus));
                 OnPropertyChanged(nameof(IsConnected));
                 Logger.Info($"[MLAstro] Serial connected: {portName} @ {baudRate} (8-N-1)");
@@ -1161,7 +1175,6 @@ namespace MLAstroRPA.Services
                 return;
             }
 
-            _connectionCheckFailures = 0;
 
             // If an external plugin (TPPA) HOLDS control: ask it to stop the PA and hand control back before closing the port.
             lock (_externalLock)
@@ -1481,6 +1494,8 @@ namespace MLAstroRPA.Services
         /// </summary>
         private void RouteLine(string line)
         {
+            if (line.IndexOf("Serial heartbeat timeout", StringComparison.OrdinalIgnoreCase) >= 0)
+                ReportMotionFault("RPA firmware reported a serial heartbeat ESTOP; reconnect before moving.");
             // Bucket 1: Telemetry
             if (line.StartsWith("<"))
             {
@@ -1774,6 +1789,7 @@ namespace MLAstroRPA.Services
         private void TouchLinkAlive()
         {
             _lastRxUtc = DateTime.UtcNow;
+            Volatile.Write(ref _lastRxStamp, Stopwatch.GetTimestamp());
             StartLinkWatchdog();   // lazy: starts on the FIRST data after a connection
         }
 
@@ -1801,6 +1817,7 @@ namespace MLAstroRPA.Services
             _linkWatchdogTimer.Dispose();
             _linkWatchdogTimer = null;
             _lastRxUtc = DateTime.UtcNow;
+            Volatile.Write(ref _lastRxStamp, Stopwatch.GetTimestamp());
         }
 
         /// <summary>
@@ -1822,7 +1839,10 @@ namespace MLAstroRPA.Services
                     return;
                 }
 
-                if (!string.Equals(HandshakeStatus, "OK!", StringComparison.Ordinal))
+                // Fresh telemetry, rather than unrelated log/control frames, is required
+                // to keep an active operation safe on either transport.
+                if (!HasFreshTelemetry) TelemetryStale?.Invoke();
+                if ((!WirelessActive && !ControllerIdentityConfirmed) || (WirelessActive && !string.Equals(HandshakeStatus, "OK!", StringComparison.Ordinal)))
                 {
                     return;
                 }
@@ -1832,7 +1852,7 @@ namespace MLAstroRPA.Services
                     return;
                 }
 
-                var silentFor = DateTime.UtcNow - _lastRxUtc;
+                var silentFor = Stopwatch.GetElapsedTime(Volatile.Read(ref _lastRxStamp));
                 if (silentFor.TotalMilliseconds < LinkWatchdogTimeoutMs)
                 {
                     return;
@@ -1904,34 +1924,28 @@ namespace MLAstroRPA.Services
                 }
 
                 // Skip polling if paused globally
+                if (!HasFreshTelemetry) TelemetryStale?.Invoke();
                 if (PauseQueryGlobal)
                 {
                     return;
                 }
 
-                // The device is alive if it answers with ANY line within the timeout.
-                // This avoids the old bug where '?' returns telemetry (not "ok"), so waiting
-                // for an explicit "ok" could spuriously report "TIME OUT".
-                var alive = await SendAndAwaitAnyAsync(ConnectionCheckCommand).ConfigureAwait(false);
-
-                if (alive)
-                {
-                    _connectionCheckFailures = 0;
-                    UpdateHandshakeStatus(true);
+                var port = _serialPort;
+                if (Volatile.Read(ref _stopsPending) != 0) return;
+                // Query delivery is independent of response timing. Waiting for a reply here
+                // skipped timer ticks and stretched the firmware heartbeat interval.
+                var sent = await SendCommandAsync(ConnectionCheckCommand, CancellationToken.None, false).ConfigureAwait(false);
+                if (!ReferenceEquals(port, _serialPort)) return;
+                if (!sent) {
+                    Logger.Warning("[MLAstro] Status query write was not confirmed; connection remains inhibited if I/O is uncertain.");
                     return;
                 }
-
-                // Fallback: the device is not answering. Auto-disconnect after a few consecutive
-                // misses so the UI flips back to "Connect" without a manual click.
-                _connectionCheckFailures++;
-                if (_connectionCheckFailures >= ConnectionCheckFailThreshold)
-                {
-                    Logger.Warning($"[MLAstro] No serial response for {_connectionCheckFailures} consecutive polls - auto disconnecting");
+                var silentFor = Stopwatch.GetElapsedTime(Volatile.Read(ref _lastRxStamp));
+                if (silentFor.TotalMilliseconds >= LinkWatchdogTimeoutMs) {
+                    Logger.Warning($"[MLAstro] No serial data for {silentFor.TotalSeconds:0.0}s - auto disconnecting");
                     Disconnect();
-                    return;
                 }
 
-                UpdateHandshakeStatus(false);
             }
             finally
             {
@@ -1993,7 +2007,7 @@ namespace MLAstroRPA.Services
                 }
 
                 var data = _serialPort.Encoding.GetBytes(text);
-                WriteBytes(data);
+                if (!await SendCommandAsync(text, CancellationToken.None, IsMotion(text)).ConfigureAwait(false)) return false;
                 AppendTerminalEntry(SerialTerminalEntry.Sent(data, _serialPort.Encoding, HexDisplay));
 
                 var completedTask = await Task.WhenAny(pending.Task, Task.Delay(HandshakeTimeoutMilliseconds)).ConfigureAwait(false);
@@ -2045,7 +2059,7 @@ namespace MLAstroRPA.Services
                 }
 
                 var data = _serialPort.Encoding.GetBytes(text);
-                WriteBytes(data);
+                if (!await SendCommandAsync(text, CancellationToken.None, IsMotion(text)).ConfigureAwait(false)) return false;
                 AppendTerminalEntry(SerialTerminalEntry.Sent(data, _serialPort.Encoding, HexDisplay));
 
                 var completedTask = await Task.WhenAny(any.Task, Task.Delay(HandshakeTimeoutMilliseconds)).ConfigureAwait(false);
@@ -2227,6 +2241,7 @@ namespace MLAstroRPA.Services
                                 // Kept for the broker side: it reads the device STATUS from here (ready/busy).
                                 LastTelemetryAt = DateTime.UtcNow;
                                 LastTelemetry = telemetryData;
+                                Volatile.Write(ref _lastTelemetryStamp, Stopwatch.GetTimestamp());
                                 Logger.Info($"[MLAstro] Telemetry parsed - Status: {telemetryData.Status}, AzPos: {telemetryData.AzPosition}, AltPos: {telemetryData.AltPosition}");
                                 InvokeOnUiThread(() => TelemetryDataReceived?.Invoke(this, new TelemetryDataEventArgs(telemetryData)));
                             }
