@@ -249,6 +249,19 @@ static class PluginChecks
         await Send("Capabilities", new MLAstroRPA.Broker.BridgeCapabilities { InterfaceVersion = 1, SilenceTimeoutMs = 10000, SessionTimeoutSec = 60, HeartbeatMs = 2000 });
         await Send("SessionState", new MLAstroRPA.Broker.BridgeSessionState { State = "Preparing" });
         await Wait(() => plugin.Runner.IsSessionRunning);
+        // Reference-sweep/camera work is an active TPPA session, but no RPA move.
+        var stopsBeforeIdleGap = firmware.StopCount;
+        firmware.PauseTelemetry = true;
+        await Task.Delay(2400, token);
+        if (!plugin.Runner.IsSessionRunning || plugin.Serial.MotionWritesBlocked || firmware.StopCount != stopsBeforeIdleGap)
+            throw new Exception("Idle RPA telemetry gap aborted the TPPA reference sweep");
+        try {
+            plugin.ManualMoveAsync("az", 1, 5).GetAwaiter().GetResult();
+            throw new Exception("Movement admitted during armed/stale reference sweep");
+        } catch (InvalidOperationException) { }
+        firmware.PauseTelemetry = false;
+        await Wait(() => plugin.Serial.HasFreshTelemetry);
+        Console.WriteLine("PASS idle telemetry gap preserves TPPA session and gates new movement");
         var initialMoves = firmware.AlignmentCount;
         await Send("Measurement", new MLAstroRPA.Broker.BridgeMeasurement {
             MeasurementId = "sample-1", SessionId = session, Status = "Valid", Northern = true,

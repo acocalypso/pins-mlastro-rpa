@@ -581,8 +581,11 @@ public sealed class MLAstroPlugin : PluginBase
         hardware.StopFailed += reason => LatchMotionFailure(reason);
         Serial.MotionFaulted += reason => { _ = HandleMotionFailureAsync(reason); };
         Serial.TelemetryStale += () => {
-            if (!motionSafety.Inhibited && (manualMoveActive || jog.Active || Runner.IsSessionRunning || Settings.TppaBrokerEnabled))
-                _ = HandleMotionFailureAsync("Telemetry became stale during an operation; stopped and inhibited until reconnection.");
+            // A TPPA session includes mount slews and captures while the RPA is idle.
+            // Fresh telemetry still gates every new correction; only an outstanding RPA move
+            // needs the immediate stop/fault when telemetry becomes stale.
+            if (!motionSafety.Inhibited && (manualMoveActive || jog.Active || hardware.IsMoving))
+                _ = HandleMotionFailureAsync("Telemetry became stale during RPA movement; stopped and inhibited until reconnection.");
         };
         api = new ControlApi(this, controlPort);
         Logger.Info("[MLAstro Linux] Loaded; hardware connection and automation remain disabled until explicitly enabled.");

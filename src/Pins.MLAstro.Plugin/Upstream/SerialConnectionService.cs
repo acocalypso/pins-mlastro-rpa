@@ -143,7 +143,7 @@ namespace MLAstroRPA.Services
         // LinkWatchdogTimeoutMs (Serial: telemetry answers the '?' poll; Wireless: telemetry/log push
         // continuously) counts as a LOST LINK, so it disconnects itself (toast + system log line).
         // quyền TPPA do Disconnect() -> RaiseExternalState(false) lo sẵn).
-        private const int LinkWatchdogTimeoutMs = 5000;
+        private const int LinkWatchdogTimeoutMs = 15000;
         private const int SerialSilenceTimeoutMs = 15000;
         private System.Timers.Timer? _linkWatchdogTimer;
         private DateTime _lastRxUtc = DateTime.UtcNow;
