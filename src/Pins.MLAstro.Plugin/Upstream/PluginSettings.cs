@@ -533,8 +533,8 @@ namespace MLAstroRPA.Settings
         public double CorrectionMaxStepArcMin
         {
             get {
-                var value = GetDouble(nameof(CorrectionMaxStepArcMin), 0.5);
-                return double.IsFinite(value) && value >= 0.1 && value <= 10 ? value : 0.5;
+                var value = GetDouble(nameof(CorrectionMaxStepArcMin), 120);
+                return double.IsFinite(value) && value >= 1 ? value : 120;
             }
             set => SetDouble(value);
         }

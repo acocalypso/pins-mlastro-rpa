@@ -27,7 +27,7 @@ Connect an MLAstro One RPA to a Raspberry Pi over USB or Wi-Fi, use manual adjus
 
 ## Status and limitations
 
-Real USB firmware/telemetry/settings communication is confirmed. The user reported successful small manual moves and jog/release/Stop testing; the transport for that report was not specified. Complete automated sky alignment, exhaustive USB movement tests and failure recovery remain pending. See [VALIDATION.md](VALIDATION.md).
+Real USB firmware/telemetry/settings communication is confirmed. The user reported successful small manual moves and jog/release/Stop testing, and a completed automated alignment under the stars on 2026-11-06. Independent final-accuracy verification, repeated-run reliability, exhaustive USB movement tests and failure recovery remain pending. See [VALIDATION.md](VALIDATION.md) and the [Windows/PINS settings audit](UPSTREAM-AUDIT.md).
 
 Controls send real movement commands when connected. A host-side jog watchdog cannot guarantee a stop after Pi failure or loss of the Pi-to-RPA connection; firmware-side Wi-Fi deadman behavior has not been established. Do not use this snapshot as an unattended alignment release.
 

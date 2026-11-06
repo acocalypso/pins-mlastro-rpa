@@ -356,9 +356,9 @@
             >Correction fraction<input
               v-model.number="factor"
               type="number"
-              min="0.1"
+              min="0.05"
               max="1"
-              step="0.1"
+              step="0.05"
               class="field"
               :disabled="
                 busy ||
@@ -371,9 +371,8 @@
             >Maximum step (arcmin)<input
               v-model.number="maxStep"
               type="number"
-              min="0.1"
-              max="10"
-              step="0.1"
+              min="1"
+              step="1"
               class="field"
               :disabled="
                 busy ||
@@ -386,7 +385,7 @@
             >Settling (seconds)<input
               v-model.number="settle"
               type="number"
-              min="1"
+              min="0"
               max="60"
               step="1"
               class="field"
@@ -518,10 +517,10 @@ const usbDevices = ref([]);
 const usbLoading = ref(false);
 let usbDiscoveryGeneration = 0;
 const tolerance = ref(1);
-const factor = ref(0.5);
-const maxStep = ref(0.5);
-const settle = ref(2);
-const pauseFirst = ref(false);
+const factor = ref(0.75);
+const maxStep = ref(120);
+const settle = ref(3);
+const pauseFirst = ref(true);
 const busy = ref(false);
 const pendingStart = ref(false);
 const stopping = ref(false);
@@ -883,9 +882,8 @@ onMounted(() => {
     status.value = await rpaRequest("status");
     const settings = await rpaRequest("settings");
     factor.value = settings.factor;
-    maxStep.value = Number.isFinite(settings.maxStepArcMin) &&
-      settings.maxStepArcMin >= 0.1 && settings.maxStepArcMin <= 10
-      ? settings.maxStepArcMin : 0.5;
+    maxStep.value = Number.isFinite(settings.maxStepArcMin) && settings.maxStepArcMin >= 1
+      ? settings.maxStepArcMin : 120;
     settle.value = settings.settleSeconds;
     pauseFirst.value = settings.pauseBeforeFirstCorrection;
     const options = await apiService.getTppaOptions();

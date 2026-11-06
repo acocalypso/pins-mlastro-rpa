@@ -35,6 +35,24 @@ static class PluginChecks
         settings.MlaHost = "mlastrorpa.local";
         if (settings.MlaHost != "mlastrorpa.local") throw new Exception("Settings did not round-trip.");
         Console.WriteLine("PASS settings round-trip in isolated in-memory profile");
+        if (settings.CorrectionMaxStepArcMin != 120) throw new Exception("Correction cap default differs from upstream 120 arcmin");
+        settings.CorrectionMaxStepArcMin = 0.5;
+        if (settings.CorrectionMaxStepArcMin != 120) throw new Exception("Legacy invalid cap did not fall back to restored default");
+        plugin.ConfigureCorrectionAsync(0.05, 240, 0, true).GetAwaiter().GetResult();
+        if (settings.CorrectionSafetyFactor != 0.05 || settings.CorrectionMaxStepArcMin != 240 || settings.AutomatedAdjustmentSettleTime != 0)
+            throw new Exception("Upstream correction setting ranges rejected or changed");
+        foreach (var invalid in new[] { (0.04, 120.0, 0.0), (0.75, 0.5, 0.0), (0.75, double.PositiveInfinity, 0.0), (0.75, 120.0, -1.0) }) {
+            try {
+                plugin.ConfigureCorrectionAsync(invalid.Item1, invalid.Item2, invalid.Item3, true).GetAwaiter().GetResult();
+                throw new Exception("Invalid correction settings accepted");
+            } catch (ArgumentException) { }
+        }
+        plugin.ConfigureCorrectionAsync(0.75, 120, 3, true).GetAwaiter().GetResult();
+        Console.WriteLine("PASS upstream correction default, legacy-cap migration and correction ranges");
+        if (Environment.GetEnvironmentVariable("MLASTRO_SETTINGS_ONLY") == "1") {
+            plugin.Teardown().GetAwaiter().GetResult();
+            return 0;
+        }
         UsbChecks.Metadata();
         using (var usbDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(90)))
             UsbChecks.Serial(plugin, usbDeadline.Token).GetAwaiter().GetResult();
@@ -84,7 +102,7 @@ static class PluginChecks
                 ("/automation", "{\"enabled\":true}", 409),
                 ("/connect", "{\"transport\":\"invalid\",\"address\":\"none\"}", 400),
                 ("/connect", "{}", 400),
-                ("/settings", "{\"factor\":0.5,\"maxStepArcMin\":0.5,\"settleSeconds\":2,\"pauseBeforeFirstCorrection\":true}", 200),
+                ("/settings", "{\"factor\":0.5,\"maxStepArcMin\":120,\"settleSeconds\":2,\"pauseBeforeFirstCorrection\":true}", 200),
                 ("/settings", "{\"factor\":2,\"maxStepArcMin\":0.5,\"settleSeconds\":2,\"pauseBeforeFirstCorrection\":true}", 400),
                 ("/stop", "{}", 200),
                 ("/unknown", "{}", 404) })

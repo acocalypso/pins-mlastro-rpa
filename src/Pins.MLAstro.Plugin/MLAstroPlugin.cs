@@ -222,7 +222,16 @@ public sealed class MLAstroPlugin : PluginBase
         factor = Settings.CorrectionSafetyFactor,
         maxStepArcMin = Settings.CorrectionMaxStepArcMin,
         settleSeconds = Settings.AutomatedAdjustmentSettleTime,
-        pauseBeforeFirstCorrection = Settings.AutoPauseAfterReferenceSweep
+        pauseBeforeFirstCorrection = Settings.AutoPauseAfterReferenceSweep,
+        axisMode = Settings.CorrectionAxisMode.ToString(),
+        overshootEnabled = Settings.CorrectionOvershootEnabled,
+        overshootUpEnabled = Settings.CorrectionOvershootUpEnabled,
+        overshootDownEnabled = Settings.CorrectionOvershootDownEnabled,
+        overshootUpArcMin = Settings.CorrectionOvershootUpArcMin,
+        overshootDownArcMin = Settings.CorrectionOvershootDownArcMin,
+        autoChangeDirection = Settings.CorrectionAutoChangeDirection,
+        reverseAzimuth = Settings.SoftwareReverseAzimuth,
+        reverseAltitude = Settings.SoftwareReverseAltitude
     };
 
     public async Task<object> DiscoverTppaAsync(CancellationToken token)
@@ -255,10 +264,10 @@ public sealed class MLAstroPlugin : PluginBase
 
     public async Task ConfigureCorrectionAsync(double factor, double maxStepArcMin, double settleSeconds, bool pauseBeforeFirstCorrection)
     {
-        if (!double.IsFinite(factor) || factor < 0.1 || factor > 1 ||
-            !double.IsFinite(maxStepArcMin) || maxStepArcMin < 0.1 || maxStepArcMin > 10 ||
-            !double.IsFinite(settleSeconds) || settleSeconds < 1 || settleSeconds > 60)
-            throw new ArgumentException("Factor must be 0.1–1, maximum step 0.1–10 arcmin, and settling 1–60 seconds.");
+        if (!double.IsFinite(factor) || factor < 0.05 || factor > 1 ||
+            !double.IsFinite(maxStepArcMin) || maxStepArcMin < 1 ||
+            !double.IsFinite(settleSeconds) || settleSeconds < 0 || settleSeconds > 60)
+            throw new ArgumentException("Factor must be 0.05–1, maximum step at least 1 arcmin, and settling 0–60 seconds.");
         await controlGate.WaitAsync();
         try {
             if (Runner.IsSessionRunning || Settings.TppaBrokerEnabled) throw new InvalidOperationException("Disable automation before changing correction settings.");
