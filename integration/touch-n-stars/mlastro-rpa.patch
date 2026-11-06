@@ -434,7 +434,7 @@ diff --git a/src/plugins/mlastro-rpa/views/MlastroView.vue b/src/plugins/mlastro
 new file mode 100644
 --- /dev/null
 +++ b/src/plugins/mlastro-rpa/views/MlastroView.vue
-@@ -0,0 +1,968 @@
+@@ -0,0 +1,976 @@
 +<template>
 +  <main class="mx-auto max-w-2xl p-4 space-y-5 text-gray-200">
 +    <header>
@@ -849,6 +849,8 @@ new file mode 100644
 +    </section>
 +    <section class="rounded-xl border border-gray-700 p-4 space-y-3">
 +      <h2 class="text-lg font-semibold">3. Align</h2>
++      <p v-if="error" role="alert" class="text-red-400">{{ error }}</p>
++      <p v-if="notice" role="status" class="text-cyan-300">{{ notice }}</p>
 +      <p class="text-sm text-gray-400">
 +        Start selects MLAstro for TPPA, enables the controller and begins the
 +        three-point sweep. Ensure the telescope has room to slew.
@@ -1172,7 +1174,11 @@ new file mode 100644
 +    const result = await apiService.postTppaOptions({
 +      AlignmentTolerance: tolerance.value,
 +    });
-+    if (!result?.Success) throw new Error("TPPA did not save the tolerance.");
++    if (!result?.Success || (result.Failures && Object.keys(result.Failures).length))
++      throw new Error("TPPA did not save the tolerance.");
++    const saved = await apiService.getTppaOptions();
++    if (!saved?.Success || Number(saved.Options?.AlignmentTolerance?.Value) !== tolerance.value)
++      throw new Error("TPPA did not retain the requested tolerance. Settings were not confirmed saved.");
 +    notice.value = "Correction settings and TPPA tolerance saved.";
 +  });
 +const start = () =>
@@ -1310,11 +1316,13 @@ new file mode 100644
 +    status.value = await rpaRequest("status");
 +    const settings = await rpaRequest("settings");
 +    factor.value = settings.factor;
-+    maxStep.value = settings.maxStepArcMin;
++    maxStep.value = Number.isFinite(settings.maxStepArcMin) &&
++      settings.maxStepArcMin >= 0.1 && settings.maxStepArcMin <= 10
++      ? settings.maxStepArcMin : 0.5;
 +    settle.value = settings.settleSeconds;
 +    pauseFirst.value = settings.pauseBeforeFirstCorrection;
 +    const options = await apiService.getTppaOptions();
-+    tolerance.value = options?.Options?.AlignmentTolerance?.Value || 1;
++    tolerance.value = options?.Options?.AlignmentTolerance?.Value ?? 0;
 +  });
 +  poll = setInterval(() => {
 +    if (!busy.value)

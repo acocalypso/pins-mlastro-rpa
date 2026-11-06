@@ -532,7 +532,10 @@ namespace MLAstroRPA.Settings
         /// <summary>Upper limit for a single correction step (arcmin), so one large error cannot produce a dangerous slew.</summary>
         public double CorrectionMaxStepArcMin
         {
-            get => GetDouble(nameof(CorrectionMaxStepArcMin), 120);
+            get {
+                var value = GetDouble(nameof(CorrectionMaxStepArcMin), 0.5);
+                return double.IsFinite(value) && value >= 0.1 && value <= 10 ? value : 0.5;
+            }
             set => SetDouble(value);
         }
 
