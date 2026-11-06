@@ -170,6 +170,9 @@
           <option :value="120">120″</option>
         </select>
       </label>
+      <p v-if="manualBlockReason && !jogActive" role="status" class="text-amber-300">
+        {{ manualBlockReason }}
+      </p>
       <div
         class="arrow-pad"
         role="group"
@@ -527,21 +530,20 @@ const paused = ref(tppa.isPause);
 const error = ref("");
 const notice = ref("");
 const lastProgress = ref("");
-const manualBlocked = computed(
-  () =>
-    busy.value ||
-    stopping.value ||
-    running.value ||
-    pendingStart.value ||
-    motionInhibited.value ||
-    !status.value.connected ||
-    status.value.automationEnabled ||
-    status.value.manualMoveActive ||
-    status.value.jogActive ||
-    jogActive.value ||
-    !deviceSettingsLoaded.value ||
-    status.value.deviceStatus !== "READY",
-);
+const manualBlockReason = computed(() => {
+  if (stopping.value) return "Stopping the RPA. Please wait.";
+  if (motionInhibited.value) return "Movement is inhibited. See the connection recovery message above.";
+  if (pendingStart.value) return "Waiting for automated alignment to start.";
+  if (!status.value.connected) return "Connect the RPA to enable the arrows.";
+  if (status.value.automationEnabled || status.value.sessionRunning)
+    return "Automated RPA alignment is active. Stop it before making manual adjustments.";
+  if (status.value.manualMoveActive) return "The previous step is still completing.";
+  if (status.value.jogActive || jogActive.value) return "Release the current jog before another adjustment.";
+  if (busy.value) return "Waiting for the current request to finish.";
+  if (status.value.deviceStatus !== "READY") return "Waiting for fresh READY telemetry from the RPA.";
+  return "";
+});
+const manualBlocked = computed(() => Boolean(manualBlockReason.value));
 const deviceSettingsBlocked = computed(
   () =>
     busy.value ||
@@ -599,6 +601,8 @@ async function discoverUsb() {
 const refreshConnection = () =>
   run(async () => {
     if (transport.value === "usb") await discoverUsb();
+    await refresh();
+    if (status.value.connected) await loadDeviceSettings();
   });
 async function refresh() {
   status.value = await rpaRequest("status");
@@ -683,7 +687,7 @@ async function loadDeviceSettings() {
       settings.altSteps > 10000000
     )
       throw new Error(
-        "Device settings are invalid. Reload them before using manual controls.",
+        "Device settings are invalid. Reload them before changing speed or backlash settings.",
       );
     deviceSettings.value = settings;
     deviceSettingsLoaded.value = true;
