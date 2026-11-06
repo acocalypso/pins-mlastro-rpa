@@ -264,6 +264,33 @@ def active_telemetry_silence(worker, firmware):
     assert firmware.count('MAlU:1') == 0
 
 
+def finite_telemetry_recovery(worker, firmware):
+    prepare(worker)
+    expect_ack(worker, 'send', generation=0, text='AzED:0,AzEM:1,AzES:0,AzDi:1,AlED:0,AlEM:0,AlES:0,AlDi:0,AAll:1\n', expiresAt=ticks(2))
+    firmware.telemetry = False
+    time.sleep(3)
+    assert not firmware.count('STOP:1'), 'finite correction stopped during short telemetry/parent pause'
+    assert not any(e.get('type') == 'fault' for e in worker.events)
+    worker.send('ping')
+    firmware.ready = False
+    firmware.telemetry = True
+    time.sleep(.3)
+    firmware.ready = True
+    worker.event(lambda e: e.get('type') == 'line' and e.get('motionReady'), 3)
+    assert firmware.count('AzED:') == 1, 'correction replayed'
+
+
+def relative_step_telemetry_recovery(worker, firmware):
+    prepare(worker)
+    expect_ack(worker, 'send', generation=0, text='JoRe:1\n', expiresAt=ticks(2))
+    expect_ack(worker, 'send', generation=0, text='MAzR:1\n', expiresAt=ticks(2))
+    firmware.telemetry = False
+    time.sleep(3)
+    assert not firmware.count('STOP:1'), 'relative step misclassified as a continuous jog'
+    assert not any(e.get('type') == 'fault' for e in worker.events)
+    worker.send('ping')
+
+
 def idle_telemetry_recovery(worker, firmware):
     prepare(worker)
     firmware.telemetry = False
@@ -335,6 +362,7 @@ def parent_death(command):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument('--case', action='append', default=[])
     parser.add_argument('command', nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ['--'] else args.command
@@ -343,13 +371,17 @@ def main():
     tests = [(idle_heartbeat, True), (active_lease_timeout, True), (eof_stops, True),
              (identity_guard, False), (stale_requests, True), (busy_no_ready, True),
              (firmware_estop, True), (active_telemetry_silence, True),
+             (finite_telemetry_recovery, True), (relative_step_telemetry_recovery, True),
              (idle_telemetry_recovery, True), (idle_telemetry_timeout, True),
              (fifo_and_timestamps, True), (output_backpressure, True)]
     for test, identity in tests:
+        if args.case and test.__name__ not in args.case:
+            continue
         with_worker(command, test, identity)
         print('PASS', test.__name__, flush=True)
-    parent_death(command)
-    print('PASS parent_death', flush=True)
+    if not args.case or 'parent_death' in args.case:
+        parent_death(command)
+        print('PASS parent_death', flush=True)
 
 
 if __name__ == '__main__':

@@ -31,7 +31,7 @@ sealed class Worker
     private readonly Channel<object> output = Channel.CreateBounded<object>(new BoundedChannelOptions(512) { FullMode = BoundedChannelFullMode.Wait, SingleReader = true });
     private readonly Channel<object> controlOutput = Channel.CreateBounded<object>(new BoundedChannelOptions(256) { FullMode = BoundedChannelFullMode.Wait, SingleReader = true });
     private readonly object state = new();
-    private bool identified, blocked = true, faulted, active, busySeen, stopSeen, isReady;
+    private bool identified, blocked = true, faulted, active, busySeen, stopSeen, isReady, relativeMode;
     private string? initialPosition, activeJog;
     private long generation, lastParent = Stopwatch.GetTimestamp(), lastRx = Stopwatch.GetTimestamp(), lastTelemetry, lastReady, readySince;
     private int faultOnce, stopOnce, disconnectOnce;
@@ -140,9 +140,13 @@ sealed class Worker
                 lock (state) {
                     var jogRefresh = active && activeJog != null && cmd.Text == activeJog && AgeMs(lastTelemetry) <= 1000 && AgeMs(Volatile.Read(ref lastParent)) <= 900;
                     allowed = cmd.Emergency || (cmd.ExpiresAt > Now && cmd.Generation == generation && (!cmd.Motion || (!blocked && !faulted && identified && ((!active && isReady && AgeMs(lastReady) <= 1000) || jogRefresh))));
+                    if (allowed) {
+                        var mode = Regex.Match(cmd.Text, @"(?:^|,)JoRe:([01])(?:,|\n)", RegexOptions.IgnoreCase);
+                        if (mode.Success) relativeMode = mode.Groups[1].Value == "1";
+                    }
                     if (allowed && cmd.Motion && !jogRefresh) {
                         active = true; busySeen = false; stopSeen = false; readySince = 0;
-                        activeJog = Regex.IsMatch(cmd.Text, @"^M(Az[LR]|Al[UD]):1\n$", RegexOptions.IgnoreCase) ? cmd.Text : null;
+                        activeJog = !relativeMode && Regex.IsMatch(cmd.Text, @"^M(Az[LR]|Al[UD]):1\n$", RegexOptions.IgnoreCase) ? cmd.Text : null;
                     }
                     if (allowed && !cmd.Motion && (cmd.Text.StartsWith("STOP:", StringComparison.OrdinalIgnoreCase) || cmd.Text.StartsWith("ESTOP:", StringComparison.OrdinalIgnoreCase) || Regex.IsMatch(cmd.Text, @"^M(Az[LR]|Al[UD]):0", RegexOptions.IgnoreCase))) { stopSeen = true; readySince = 0; }
                     if (allowed) { drained = new(TaskCreationOptions.RunContinuationsAsynchronously); writeInFlight = drained; }
@@ -203,7 +207,10 @@ sealed class Worker
     private async Task HousekeepingAsync() {
         var lastQuery = 0L;
         while (!shutdown.IsCancellationRequested) {
-            bool known, moving, stale; lock (state) { known = identified; moving = active; stale = active && AgeMs(lastTelemetry) > 1000; }
+            // Held-button jogs need a short deadman. Firmware-controlled finite moves
+            // may be quiet during backlash take-up; give them the normal link grace.
+            bool known, moving, jogging, stale;
+            lock (state) { known = identified; moving = active; jogging = activeJog != null; stale = active && AgeMs(lastTelemetry) > (jogging ? 1000 : 15000); }
             if (stale) TriggerFault("Telemetry became stale during motion", true);
             if (known && !moving && AgeMs(Volatile.Read(ref lastRx)) > 15000) {
                 TriggerFault("USB receive silence exceeded 15 seconds", true); QueueDisconnect(); await Task.Delay(1000); shutdown.Cancel(); return;
@@ -215,7 +222,7 @@ sealed class Worker
             }
             bool alive;
             try { using var p = Process.GetProcessById(parent); alive = !p.HasExited; } catch { alive = false; }
-            if (!alive || (moving && AgeMs(Volatile.Read(ref lastParent)) > 900) || (!moving && AgeMs(Volatile.Read(ref lastParent)) > 30000)) {
+            if (!alive || AgeMs(Volatile.Read(ref lastParent)) > (moving && jogging ? 900 : 30000)) {
                 TriggerFault(!alive ? "Parent process exited" : "Parent heartbeat timed out", true);
                 if (!alive || !moving) { QueueDisconnect(); await Task.Delay(1000); shutdown.Cancel(); return; }
             }

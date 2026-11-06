@@ -524,6 +524,8 @@ namespace MLAstroRPA.Services
         /// <summary>Firmware STATUS token of the last telemetry ("READY", "MOVING", "ALIGNING", ...) - empty while unknown.</summary>
         public bool HasFreshTelemetry => LastTelemetry != null && Volatile.Read(ref _lastTelemetryStamp) != 0 &&
             Stopwatch.GetElapsedTime(Volatile.Read(ref _lastTelemetryStamp)).TotalMilliseconds <= TelemetryFreshMilliseconds;
+        public bool HasRecentMotionTelemetry => LastTelemetry != null && Volatile.Read(ref _lastTelemetryStamp) != 0 &&
+            Stopwatch.GetElapsedTime(Volatile.Read(ref _lastTelemetryStamp)).TotalMilliseconds <= 15000;
         public string DeviceStatus => LastTelemetry == null ? string.Empty : !HasFreshTelemetry ? "STALE" :
             WorkerActive && LastTelemetry.Status == "READY" && !_usbWorker!.ReadyToMove ? "SETTLING" : LastTelemetry.Status;
 

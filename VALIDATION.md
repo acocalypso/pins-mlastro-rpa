@@ -1,5 +1,13 @@
 # Validation snapshot — 2026-11-04
 
+## Finite-move telemetry grace
+
+Sky testing exposed two overly broad checks: an active TPPA reference sweep was treated as active RPA movement, and the USB worker applied a one-second jog telemetry deadline to firmware-controlled finite corrections. The parent now tolerates idle session gaps; Wi-Fi silence allows fifteen seconds. Bounded relative steps and alignment corrections allow fifteen seconds without telemetry, while continuous jogs retain short release/liveness deadlines. Firmware watchdog configuration is not changed by these binaries.
+
+Targeted Linux PTY checks passed idle heartbeats, continuous-jog parent loss, continuous-jog telemetry loss, a three-second telemetry/parent pause during a finite correction with subsequent recovery, and relative-step classification with a three-second gap. Commands were not replayed. The plugin builds successfully. The prior idle-session regression and extracted Stop/writer safety checks passed. Complete sky-alignment acceptance remains pending; these tests do not establish that hardware or network dropouts are resolved.
+
+## Earlier validation
+
 | Area | Evidence | Remaining work |
 |---|---|---|
 | PINS plugin loading | Loaded on Linux ARM64 with installed host assemblies; disconnected and disarmed on load | Broader host/version coverage and packaging |

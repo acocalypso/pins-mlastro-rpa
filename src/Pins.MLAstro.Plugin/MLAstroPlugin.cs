@@ -584,7 +584,7 @@ public sealed class MLAstroPlugin : PluginBase
             // A TPPA session includes mount slews and captures while the RPA is idle.
             // Fresh telemetry still gates every new correction; only an outstanding RPA move
             // needs the immediate stop/fault when telemetry becomes stale.
-            if (!motionSafety.Inhibited && (manualMoveActive || jog.Active || hardware.IsMoving))
+            if (!motionSafety.Inhibited && (jog.Active || ((manualMoveActive || hardware.IsMoving) && !Serial.HasRecentMotionTelemetry)))
                 _ = HandleMotionFailureAsync("Telemetry became stale during RPA movement; stopped and inhibited until reconnection.");
         };
         api = new ControlApi(this, controlPort);
