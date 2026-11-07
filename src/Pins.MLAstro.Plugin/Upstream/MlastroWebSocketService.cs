@@ -1,4 +1,4 @@
-﻿using MLAstroRPA.Dockables;
+using MLAstroRPA.Dockables;
 using MLAstroRPA.Settings;
 using NINA.Core.Utility;
 using NINA.Core.Utility.Notification;
@@ -1777,7 +1777,7 @@ namespace MLAstroRPA.Services
         {
             try
             {
-                Logger.Info($"[MLAstro][WS] {text}");
+                ; // Raw device chatter intentionally omitted.
             }
             catch { }
         }

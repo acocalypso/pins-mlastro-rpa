@@ -67,7 +67,7 @@ namespace MLAstroRPA.Services
             {
                 if (_pauseQueryGlobal == value) return;
                 _pauseQueryGlobal = value;
-                Logger.Info($"[MLAstro] PauseQueryGlobal set to: {value}");
+                ; // Routine device chatter intentionally omitted.
             }
         }
 
@@ -85,7 +85,7 @@ namespace MLAstroRPA.Services
             {
                 if (_hidePollingTelemetry == value) return;
                 _hidePollingTelemetry = value;
-                Logger.Info($"[MLAstro] HidePollingTelemetry set to: {value}");
+                ; // Routine device chatter intentionally omitted.
             }
         }
 
@@ -325,7 +325,7 @@ namespace MLAstroRPA.Services
         /// </summary>
         public void NotifyExternalStop(string reason)
         {
-            Logger.Info($"[MLAstro] NotifyExternalStop: {reason}");
+            ; // Routine device chatter intentionally omitted.
             RaiseExternalStop(reason);
             // Wireless: notify the WebSocket session (the TPPA driver shares this service through the proxy).
             try { _wirelessProxy?.NotifyExternalStop(reason); } catch { }
@@ -375,7 +375,7 @@ namespace MLAstroRPA.Services
             // Otherwise PauseQueryGlobal stays true forever -> MLAstro stops polling "?" until a
             // new borrow cycle runs or the pause is switched off by hand.
             PauseQueryGlobal = false;
-            Logger.Info("[MLAstro] EndExternalControl: released control to local UI (port stays open).");
+            ; // Routine device chatter intentionally omitted.
         }
 
         /// <summary>
@@ -477,7 +477,7 @@ namespace MLAstroRPA.Services
             _handshakeTimeoutMilliseconds = HandshakeTimeoutFixedMilliseconds;
             _pollingIntervalMilliseconds = Math.Clamp(_settings.PollingIntervalMilliseconds, PollingIntervalMinMilliseconds, PollingIntervalMaxMilliseconds);
 
-            Logger.Info("[MLAstro] SerialConnectionService created");
+            ; // Routine device chatter intentionally omitted.
 
             // Register as singleton if not already set
             lock (_instanceLock)
@@ -657,7 +657,7 @@ namespace MLAstroRPA.Services
                 _handshakeTimeoutMilliseconds = clamped;
                 _settings.HandshakeTimeoutMilliseconds = clamped;
                 OnPropertyChanged();
-                Logger.Info($"[MLAstro] Handshake timeout set to {clamped} ms");
+                ; // Routine device chatter intentionally omitted.
             }
         }
 
@@ -682,7 +682,7 @@ namespace MLAstroRPA.Services
                     _connectionCheckTimer.Interval = clamped;
                 }
 
-                Logger.Info($"[MLAstro] Polling interval set to {clamped} ms");
+                ; // Routine device chatter intentionally omitted.
             }
         }
 
@@ -826,7 +826,7 @@ namespace MLAstroRPA.Services
                 catch (Exception ex)
                 {
                     // Busy port / another device / no answer -> keep scanning the remaining ports.
-                    Logger.Info($"[MLAstro] Auto scan skipped {portName}: {ex.Message}");
+                    ; // Routine device chatter intentionally omitted.
                 }
                 finally
                 {
@@ -1343,7 +1343,7 @@ namespace MLAstroRPA.Services
 
                 ConnectionStatus = "ESP32 reset";
                 AppendTerminalEntry(SerialTerminalEntry.Disconnected("ESP32 reset via serial"));
-                Logger.Info("[MLAstro] ESP32 reset via DTR/RTS");
+                ; // Routine device chatter intentionally omitted.
                 return true;
             }
             catch (Exception ex)
@@ -1382,7 +1382,7 @@ namespace MLAstroRPA.Services
                 // Log sent commands (exclude telemetry query for cleaner logs)
                 if (!text.Equals("?\n"))
                 {
-                    Logger.Info($"[MLAstro] Command sent: {text.TrimEnd('\r', '\n')}");
+                    ; // Routine device chatter intentionally omitted.
                 }
 
                 return true;
@@ -1650,24 +1650,24 @@ namespace MLAstroRPA.Services
         {
             if (line.StartsWith("<"))
             {
-                Logger.Info($"[MLAstro] Telemetry received: {line.Substring(0, Math.Min(200, line.Length))}...");
+                ; // Routine device chatter intentionally omitted.
             }
             else if (line.StartsWith("ERROR:", StringComparison.Ordinal))
             {
                 // Dedicated error telemetry (not a command reply) - log as warning with the summary
-                Logger.Warning($"[MLAstro] Error telemetry: {line}");
+                Logger.Warning("[MLAstro] Device reported an error; inspect controller status.");
             }
             else if (line.StartsWith("ok", StringComparison.OrdinalIgnoreCase))
             {
-                Logger.Info("[MLAstro] OK response received");
+                ; // Routine device chatter intentionally omitted.
             }
             else if (line.StartsWith("error", StringComparison.OrdinalIgnoreCase))
             {
-                Logger.Warning($"[MLAstro] Error response: {line}");
+                Logger.Warning("[MLAstro] Device reported an error; inspect controller status.");
             }
             else if (line.Contains("COMPLETED"))
             {
-                Logger.Info($"[MLAstro] Completion event: {line}");
+                ; // Routine device chatter intentionally omitted.
             }
             else if (line.Contains("DISCONNECTED"))
             {
@@ -1750,7 +1750,7 @@ namespace MLAstroRPA.Services
                 }
 
                 var state = new DriverErrorState(dict);
-                Logger.Info($"[MLAstro] Error telemetry parsed: {(state.HasErrors || state.HasWarnings ? state.Summary : "All clear")}");
+                ; // Routine device chatter intentionally omitted.
                 ErrorState = state;
                 InvokeOnUiThread(() => ErrorStateChanged?.Invoke(this, state));
             }
@@ -1897,7 +1897,7 @@ namespace MLAstroRPA.Services
             _linkWatchdogTimer = new System.Timers.Timer(1000) { AutoReset = true };
             _linkWatchdogTimer.Elapsed += (_, _) => CheckLinkWatchdog();
             _linkWatchdogTimer.Start();
-            Logger.Info("[MLAstro] Link watchdog started (auto-disconnect when the device goes silent)");
+            ; // Routine device chatter intentionally omitted.
         }
 
         private void StopLinkWatchdog()
@@ -2184,7 +2184,7 @@ namespace MLAstroRPA.Services
             {
                 if (text.StartsWith("ok,", StringComparison.OrdinalIgnoreCase)) ControllerIdentityConfirmed = true;
                 FirmwareVersion = firmwareMatch.Groups[1].Value;
-                Logger.Info($"[MLAstro] Device firmware detected: {FirmwareVersion}");
+                ; // Routine device chatter intentionally omitted.
             }
         }
 
@@ -2208,7 +2208,7 @@ namespace MLAstroRPA.Services
                     if (value != "?")
                     {
                         _settings.ApPass = value;
-                        Logger.Info($"[MLAstro] AP password synced from device ({(value.Length == 0 ? "empty" : "set")})");
+                        ; // Routine device chatter intentionally omitted.
                     }
                 }
 
@@ -2219,7 +2219,7 @@ namespace MLAstroRPA.Services
                     if (value != "?")
                     {
                         _settings.WifiPass = value;
-                        Logger.Info($"[MLAstro] Station password synced from device ({(value.Length == 0 ? "empty" : "set")})");
+                        ; // Routine device chatter intentionally omitted.
                     }
                 }
             }
@@ -2279,22 +2279,22 @@ namespace MLAstroRPA.Services
                 if (receivedText.Contains("AzAN:COMPLETED"))
                 {
                     CompletionReceived?.Invoke(this, "AzAN");
-                    Logger.Info("[MLAstro] Azimuth alignment completed");
+                    ; // Routine device chatter intentionally omitted.
                 }
                 else if (receivedText.Contains("AlAN:COMPLETED"))
                 {
                     CompletionReceived?.Invoke(this, "AlAN");
-                    Logger.Info("[MLAstro] Altitude alignment completed");
+                    ; // Routine device chatter intentionally omitted.
                 }
                 else if (receivedText.Contains("AAll:COMPLETED"))
                 {
                     CompletionReceived?.Invoke(this, "AAll");
-                    Logger.Info("[MLAstro] All alignment completed");
+                    ; // Routine device chatter intentionally omitted.
                 }
                 else if (receivedText.Contains("HOME_COMPLETED"))
                 {
                     CompletionReceived?.Invoke(this, "HOME");
-                    Logger.Info("[MLAstro] Home return completed");
+                    ; // Routine device chatter intentionally omitted.
                 }
             }
         }
@@ -2327,7 +2327,7 @@ namespace MLAstroRPA.Services
                                 ? bufferContent.Substring(startIdx, lineEndIdx - startIdx)
                                 : bufferContent.Substring(startIdx);
 
-                            Logger.Info($"[MLAstro] Processing telemetry line: {telemetryLine.Substring(0, Math.Min(100, telemetryLine.Length))}...");
+                            ; // Routine device chatter intentionally omitted.
 
                             // Parse telemetry and raise event
                             var telemetryData = ParseTelemetryLine(telemetryLine);
@@ -2337,7 +2337,7 @@ namespace MLAstroRPA.Services
                                 LastTelemetryAt = DateTime.UtcNow;
                                 LastTelemetry = telemetryData;
                                 Volatile.Write(ref _lastTelemetryStamp, Stopwatch.GetTimestamp());
-                                Logger.Info($"[MLAstro] Telemetry parsed - Status: {telemetryData.Status}, AzPos: {telemetryData.AzPosition}, AltPos: {telemetryData.AltPosition}");
+                                ; // Routine device chatter intentionally omitted.
                                 InvokeOnUiThread(() => TelemetryDataReceived?.Invoke(this, new TelemetryDataEventArgs(telemetryData)));
                             }
                             else
@@ -2357,7 +2357,7 @@ namespace MLAstroRPA.Services
                                 {
                                     _applyingTelemetrySettings = false;
                                 }
-                                Logger.Info("[MLAstro] Telemetry data received and parsed");
+                                ; // Routine device chatter intentionally omitted.
                             }
 
                             // Clear buffer after successful parse
@@ -2478,7 +2478,7 @@ namespace MLAstroRPA.Services
 
         public void Dispose()
         {
-            Logger.Info("[MLAstro] SerialConnectionService disposing...");
+            ; // Routine device chatter intentionally omitted.
 
             // Stop connection check timer first
             StopConnectionCheckTimer();
@@ -2510,7 +2510,7 @@ namespace MLAstroRPA.Services
                 }
             }
 
-            Logger.Info("[MLAstro] SerialConnectionService disposed");
+            ; // Routine device chatter intentionally omitted.
         }
 
         protected virtual void OnPropertyChanged([CallerMemberName] string propertyName = null!)
@@ -2522,7 +2522,7 @@ namespace MLAstroRPA.Services
         {
             if (string.IsNullOrWhiteSpace(telemetryLine))
             {
-                Logger.Info("[MLAstro] ParseTelemetryLine: telemetryLine is null or empty");
+                ; // Routine device chatter intentionally omitted.
                 return null;
             }
 
@@ -2534,18 +2534,18 @@ namespace MLAstroRPA.Services
 
                 if (startIdx < 0 || endIdx < 0 || endIdx <= startIdx)
                 {
-                    Logger.Info($"[MLAstro] ParseTelemetryLine: Invalid format - startIdx={startIdx}, endIdx={endIdx}");
+                    ; // Routine device chatter intentionally omitted.
                     return null;
                 }
 
                 var headerSection = telemetryLine.Substring(startIdx + 1, endIdx - startIdx - 1);
-                Logger.Info($"[MLAstro] ParseTelemetryLine: Header section = {headerSection}");
+                ; // Routine device chatter intentionally omitted.
 
                 var parts = headerSection.Split('|');
 
                 if (parts.Length < 2)
                 {
-                    Logger.Info($"[MLAstro] ParseTelemetryLine: Not enough parts - {parts.Length}");
+                    ; // Routine device chatter intentionally omitted.
                     return null;
                 }
 
@@ -2568,7 +2568,7 @@ namespace MLAstroRPA.Services
                 if (endIdx < telemetryLine.Length - 1)
                 {
                     var dataSection = telemetryLine.Substring(endIdx + 1);
-                    Logger.Info($"[MLAstro] ParseTelemetryLine: Data section length = {dataSection.Length}");
+                    ; // Routine device chatter intentionally omitted.
                     ParseDataSettings(dataSection, data);
                 }
 
@@ -2576,7 +2576,7 @@ namespace MLAstroRPA.Services
                 data.AzPosition = FormatDegreesToDMS(data.AzPositionDegrees);
                 data.AltPosition = FormatDegreesToDMS(data.AltPositionDegrees);
 
-                Logger.Info($"[MLAstro] ParseTelemetryLine: Parsed Status={data.Status}, AzPos={data.AzPosition}, AltPos={data.AltPosition}");
+                ; // Routine device chatter intentionally omitted.
 
                 return data;
             }
@@ -2651,7 +2651,7 @@ namespace MLAstroRPA.Services
                     data.AltMovedPosition = FormatDegreesToDMS(altMoved);
                 }
 
-                Logger.Info($"[MLAstro] ParseMovedPosition: Az={data.AzMovedPosition}, Alt={data.AltMovedPosition}");
+                ; // Routine device chatter intentionally omitted.
             }
             catch (Exception ex)
             {
@@ -3035,7 +3035,7 @@ namespace MLAstroRPA.Services
                 var dataSection = telemetryData.Substring(startIndex + 1);
                 var parameters = dataSection.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
 
-                Logger.Info($"[MLAstro] Parsing {parameters.Length} parameters from telemetry");
+                ; // Routine device chatter intentionally omitted.
 
                 foreach (var param in parameters)
                 {
@@ -3051,7 +3051,7 @@ namespace MLAstroRPA.Services
                     // Log WiFi-related parameters
                     if (key.StartsWith("STA") || key.StartsWith("AP"))
                     {
-                        Logger.Info($"[MLAstro] WiFi param: {key} = {value}");
+                        ; // Routine device chatter intentionally omitted.
                     }
 
                     MapParameterToSettings(key, value, settings);
@@ -3234,13 +3234,13 @@ namespace MLAstroRPA.Services
                         break;
                     case "STAi":
                         settings.WifiIp = value;
-                        Logger.Info($"[MLAstro] STAi mapped: {value}");
+                        ; // Routine device chatter intentionally omitted.
                         break;
                 }
             }
             catch (Exception ex)
             {
-                Logger.Warning($"[MLAstro] Failed to map parameter {key}={value}: {ex.Message}");
+                Logger.Warning("[MLAstro] Failed to parse a device setting.");
             }
         }
     }
