@@ -15,7 +15,7 @@ sealed class VirtualRpa : IDisposable
     public volatile bool PauseTelemetry;
     public int StopCount, UnrelatedFrames;
     public int AlignmentCount;
-    public int JogCount, JogStops;
+    public int JogCount, JogStops, ManualCount;
     public int Speed = 1, AzBack = 77917, AltBack = 1000;
     public bool Backlash = true;
     public double LastManualArcseconds;
@@ -35,20 +35,33 @@ sealed class VirtualRpa : IDisposable
     }
     private async Task RunAsync()
     {
+        try {
+            while (!shutdown.IsCancellationRequested) {
+                var context = await listener.GetContextAsync().WaitAsync(shutdown.Token);
+                socket = (await context.AcceptWebSocketAsync(null)).WebSocket;
+                await RunConnectionAsync();
+                socket.Dispose();
+                socket = null;
+            }
+        } catch (OperationCanceledException) when (shutdown.IsCancellationRequested) { }
+        catch (HttpListenerException) when (shutdown.IsCancellationRequested) { }
+        catch (ObjectDisposedException) when (shutdown.IsCancellationRequested) { }
+    }
+    private async Task RunConnectionAsync()
+    {
+        using var connection = CancellationTokenSource.CreateLinkedTokenSource(shutdown.Token);
         Task? telemetry = null;
         try
         {
-            var context = await listener.GetContextAsync().WaitAsync(shutdown.Token);
-            socket = (await context.AcceptWebSocketAsync(null)).WebSocket;
             await SendAsync(new { fw_ver = "firmware 1.13.0", speedLevel = Speed, backlash = new { enable = Backlash, az_steps = AzBack, alt_steps = AltBack }, role = "master", serial_locked = false });
             telemetry = Task.Run(async () => {
-                while (!shutdown.IsCancellationRequested) {
+                while (!connection.IsCancellationRequested) {
                     if (PauseTelemetry) {
                         // A log plus harmless error-state frame exercises inbound traffic without position telemetry.
                         await SendAsync(new { log = "simulated background event", error = "ERROR:Simulated:0" });
                         Interlocked.Increment(ref UnrelatedFrames);
                     } else await SendAsync(new { sys_status = Status, pos_az = 0.0, pos_alt = 0.0 });
-                    await Task.Delay(100, shutdown.Token);
+                    await Task.Delay(100, connection.Token);
                 }
             });
             var buffer = new byte[8192];
@@ -62,7 +75,7 @@ sealed class VirtualRpa : IDisposable
                 {
                     case "handshake": await SendAsync(new { cmd = "handshakeResult", result = true, fw_ver = "firmware 1.13.0", link = "STA" }); break;
                     case "align": Status = "MOVING"; Interlocked.Increment(ref AlignmentCount); AlignmentReceived.TrySetResult(); break;
-                    case "moveRelative": LastManualArcseconds = doc.RootElement.GetProperty("data").GetProperty("angle").GetDouble() * 3600; Status = "MOVING"; break;
+                    case "moveRelative": Interlocked.Increment(ref ManualCount); LastManualArcseconds = doc.RootElement.GetProperty("data").GetProperty("angle").GetDouble() * 3600; Status = "MOVING"; break;
                     case "stop": case "forceStop": Status = "READY"; Interlocked.Increment(ref StopCount); StopReceived.TrySetResult(); break;
                     case "move": Status = "MOVING"; Interlocked.Increment(ref JogCount); break;
                     case "stopMove": Status = "READY"; Interlocked.Increment(ref JogStops); break;
@@ -79,7 +92,7 @@ sealed class VirtualRpa : IDisposable
         catch (OperationCanceledException) when (shutdown.IsCancellationRequested) { }
         catch (WebSocketException) { }
         finally {
-            shutdown.Cancel();
+            connection.Cancel();
             if (telemetry != null) { try { await telemetry; } catch (OperationCanceledException) { } catch (WebSocketException) { } }
         }
     }

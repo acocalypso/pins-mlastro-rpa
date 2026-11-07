@@ -179,6 +179,12 @@ namespace MLAstroRPA.Broker
         {
             if (plan == null || !plan.HasMove) { return true; }
 
+            // An image download can briefly delay telemetry between readiness and dispatch.
+            // Wait for a fresh sample before sending this one command, never replay it.
+            var freshUntil = DateTime.UtcNow.AddSeconds(15);
+            while (_serial.IsConnected && !_serial.HasFreshTelemetry && DateTime.UtcNow < freshUntil)
+                await Task.Delay(50, token).ConfigureAwait(false);
+            token.ThrowIfCancellationRequested();
             if (!_serial.IsConnected || !_serial.HasFreshTelemetry)
             {
                 Logger.Warning("[MLAstro][Broker] Cannot align: the hardware link is disconnected or telemetry is stale.");

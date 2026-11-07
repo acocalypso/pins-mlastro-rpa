@@ -14,6 +14,9 @@
       {{ error }}
     </p>
     <p v-if="notice" role="status" class="text-cyan-300">{{ notice }}</p>
+    <p v-if="watchdog?.supported && watchdog.enabled === false" role="alert" class="rounded-lg border border-amber-600 bg-amber-950 p-3">
+      The firmware communication watchdog is disabled. Communication-loss protection is unavailable.
+    </p>
     <p
       v-if="motionFaulted"
       role="alert"
@@ -21,8 +24,7 @@
     >
       Motion is inhibited:
       {{ status.motionFault || "A movement command could not be confirmed." }}
-      Disconnect and reconnect the RPA, then wait for it to be ready before
-      moving again.
+      Use Clear fault and reconnect, then wait for the RPA to be ready before moving again.
     </p>
     <p
       v-else-if="motionInhibited"
@@ -107,11 +109,14 @@
         </button>
         <button
           class="tns-btn-secondary"
-          :disabled="!canDisconnect(status, jogActive, busy)"
+          :disabled="!canDisconnect(status, false, busy)"
           @click="disconnect"
         >
           Disconnect
         </button>
+        <button class="tns-btn-secondary" :disabled="busy || stopping || running || pendingStart || status.apiVersion < 2 || !status.apiVersion" @click="reconnect">Clear fault and reconnect</button>
+        <button class="tns-btn-secondary" :disabled="busy || status.apiVersion < 2 || !status.apiVersion" @click="checkConnection">Run connection check</button>
+        <button class="tns-btn-secondary" :disabled="busy || status.apiVersion < 2 || !status.apiVersion" @click="downloadDiagnostics">Download diagnostics</button>
         <button
           class="tns-btn-secondary"
           :disabled="busy"
@@ -119,6 +124,16 @@
         >
           Refresh
         </button>
+      </div>
+      <p v-if="connectionReady && (!status.apiVersion || status.apiVersion < 2)" class="text-sm text-gray-400">Fault recovery and diagnostic export require a newer backend.</p>
+      <div v-if="diagnostics" class="border border-gray-700 rounded-lg p-3 space-y-1 text-sm" role="status">
+        <p class="font-semibold">Connection check snapshot</p>
+        <p>Firmware: {{ diagnostics.firmwareVersion || "unknown" }} · PINS: {{ diagnostics.pinsVersion || "unknown" }} · TPPA: {{ diagnostics.tppaVersion || "unknown" }}</p>
+        <p>Plugin: {{ diagnostics.pluginVersion || "unknown" }} · Relay: {{ diagnostics.relayVersion || "unknown" }}</p>
+        <p>Transport: {{ diagnostics.transport || "unknown" }} · Device readiness: {{ diagnostics.readiness || "unknown" }}</p>
+        <p>Telemetry age: {{ durationDisplay(diagnostics.telemetryAgeMilliseconds) }} · Longest observed gap: {{ durationDisplay(diagnostics.longestTelemetryGapMilliseconds) }}</p>
+        <p>Pi throttling flags: {{ diagnostics.piPower?.throttled == null ? "unknown" : `0x${diagnostics.piPower.throttled.toString(16)}` }} · USB max current setting: {{ diagnostics.piPower?.usbMaxCurrentEnable ?? "unknown" }}</p>
+        <p v-if="diagnostics.piPower?.throttled > 0" class="text-amber-300">The Pi reports current or past power or throttling flags. Inspect its power supply and cooling.</p>
       </div>
       <p role="status">
         {{
@@ -141,22 +156,11 @@
     <section class="rounded-xl border border-gray-700 p-4 space-y-3">
       <h2 class="text-lg font-semibold">Manual adjustments</h2>
       <p class="text-sm text-gray-400">
-        Choose a bounded step or hold an arrow to jog. Release to stop.
+        Choose a bounded step and press an arrow to move.
         Direction reversals may take longer while firmware backlash compensation
         runs.
       </p>
       <label
-        >Movement mode
-        <select
-          v-model="manualMode"
-          class="field max-w-48"
-          :disabled="manualBlocked || jogActive"
-        >
-          <option value="step">Step</option>
-          <option value="jog">Hold to jog</option>
-        </select>
-      </label>
-      <label v-if="manualMode === 'step'"
         >Step size (arcseconds)
         <select
           v-model.number="manualStep"
@@ -170,7 +174,7 @@
           <option :value="120">120″</option>
         </select>
       </label>
-      <p v-if="manualBlockReason && !jogActive" role="status" class="text-amber-300">
+      <p v-if="manualBlockReason" role="status" class="text-amber-300">
         {{ manualBlockReason }}
       </p>
       <div
@@ -181,24 +185,16 @@
         <button
           class="pad-key pad-up"
           aria-label="Altitude up"
-          :disabled="manualBlocked && !jogActive"
-          @pointerdown="pressArrow($event, 'alt', 1)"
-          @pointerup="releaseArrow"
-          @pointercancel="releaseArrow"
-          @lostpointercapture="releaseArrow"
-          @click="arrowClick('alt', 1)"
+          :disabled="manualBlocked"
+          @click="manualMove('alt', 1)"
         >
           <span aria-hidden="true">↑</span><small>Alt up</small>
         </button>
         <button
           class="pad-key pad-left"
           aria-label="Azimuth left"
-          :disabled="manualBlocked && !jogActive"
-          @pointerdown="pressArrow($event, 'az', -1)"
-          @pointerup="releaseArrow"
-          @pointercancel="releaseArrow"
-          @lostpointercapture="releaseArrow"
-          @click="arrowClick('az', -1)"
+          :disabled="manualBlocked"
+          @click="manualMove('az', -1)"
         >
           <span aria-hidden="true">←</span><small>Az left</small>
         </button>
@@ -212,24 +208,16 @@
         <button
           class="pad-key pad-right"
           aria-label="Azimuth right"
-          :disabled="manualBlocked && !jogActive"
-          @pointerdown="pressArrow($event, 'az', 1)"
-          @pointerup="releaseArrow"
-          @pointercancel="releaseArrow"
-          @lostpointercapture="releaseArrow"
-          @click="arrowClick('az', 1)"
+          :disabled="manualBlocked"
+          @click="manualMove('az', 1)"
         >
           <span aria-hidden="true">→</span><small>Az right</small>
         </button>
         <button
           class="pad-key pad-down"
           aria-label="Altitude down"
-          :disabled="manualBlocked && !jogActive"
-          @pointerdown="pressArrow($event, 'alt', -1)"
-          @pointerup="releaseArrow"
-          @pointercancel="releaseArrow"
-          @lostpointercapture="releaseArrow"
-          @click="arrowClick('alt', -1)"
+          :disabled="manualBlocked"
+          @click="manualMove('alt', -1)"
         >
           <span aria-hidden="true">↓</span><small>Alt down</small>
         </button>
@@ -239,7 +227,7 @@
           >Speed level<select
             v-model.number="deviceSettings.speedLevel"
             class="field"
-            :disabled="manualBlocked || jogActive"
+            :disabled="manualBlocked"
           >
             <option v-for="level in 5" :key="level" :value="level">
               {{ level }}
@@ -254,7 +242,7 @@
             max="10000000"
             step="1"
             class="field"
-            :disabled="manualBlocked || jogActive"
+            :disabled="manualBlocked"
         /></label>
         <label
           >ALT backlash steps<input
@@ -263,21 +251,21 @@
             min="0"
             step="1"
             class="field"
-            :disabled="manualBlocked || jogActive"
+            :disabled="manualBlocked"
         /></label>
       </div>
       <label
         ><input
           v-model="deviceSettings.backlashEnabled"
           type="checkbox"
-          :disabled="manualBlocked || jogActive"
+          :disabled="manualBlocked"
         />
         Enable backlash compensation</label
       >
       <div class="flex gap-2">
         <button
           class="tns-btn-secondary"
-          :disabled="manualBlocked || jogActive"
+          :disabled="manualBlocked || !deviceSettingsLoaded"
           @click="saveDeviceSettings"
         >
           Save device settings</button
@@ -289,12 +277,7 @@
           Reload device settings
         </button>
       </div>
-      <p v-if="!deviceSettingsLoaded" class="text-sm text-gray-400">
-        Load device settings before using manual controls.
-      </p>
-      <p v-if="status.jogError" role="alert" class="text-sm text-red-300">
-        {{ status.jogError }}
-      </p>
+      <p v-if="!deviceSettingsLoaded" class="text-sm text-gray-400">Load device settings before changing speed or backlash settings.</p>
       <p v-if="status.backlash" class="text-sm text-gray-400">
         Firmware backlash:
         {{ status.backlash.enabled ? "enabled" : "disabled" }} · AZ
@@ -329,7 +312,6 @@
             busy ||
             status.automationEnabled ||
             running ||
-            jogActive ||
             status.jogActive
           "
         />
@@ -340,7 +322,6 @@
           busy ||
           status.automationEnabled ||
           running ||
-          jogActive ||
           status.jogActive
         "
         @click="saveSettings"
@@ -363,7 +344,6 @@
               :disabled="
                 busy ||
                 status.automationEnabled ||
-                jogActive ||
                 status.jogActive
               "
           /></label>
@@ -377,7 +357,6 @@
               :disabled="
                 busy ||
                 status.automationEnabled ||
-                jogActive ||
                 status.jogActive
               "
           /></label>
@@ -392,7 +371,6 @@
               :disabled="
                 busy ||
                 status.automationEnabled ||
-                jogActive ||
                 status.jogActive
               "
           /></label>
@@ -402,11 +380,54 @@
             v-model="pauseFirst"
             type="checkbox"
             :disabled="
-              busy || status.automationEnabled || jogActive || status.jogActive
+              busy || status.automationEnabled || status.jogActive
             "
           />
           Pause before the first correction</label
         >
+        <div v-if="advanced.axisMode !== undefined" class="space-y-3 mt-3">
+          <label>Correction axes
+            <select v-model="advanced.axisMode" class="field" :disabled="settingsBlocked">
+              <option value="Both">Both axes</option><option value="Auto">Larger error first</option>
+            </select>
+          </label>
+          <label class="block"><input v-model="advanced.overshootEnabled" type="checkbox" :disabled="settingsBlocked" /> Enable altitude overshoot</label>
+          <label>Overshoot direction
+            <select v-model="overshootDirection" class="field" :disabled="settingsBlocked">
+              <option v-if="overshootDirection === 'conflict'" value="conflict" disabled>Choose one direction or off</option>
+              <option value="off">Off</option><option value="up">Up</option><option value="down">Down</option>
+            </select>
+          </label>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <label>Up overshoot (arcminutes)<input v-model.number="advanced.overshootUpArcMin" type="number" min="0" step="any" class="field" :disabled="settingsBlocked" /></label>
+            <label>Down overshoot (arcminutes)<input v-model.number="advanced.overshootDownArcMin" type="number" min="0" step="any" class="field" :disabled="settingsBlocked" /></label>
+          </div>
+          <label class="block"><input v-model="advanced.autoChangeDirection" type="checkbox" :disabled="settingsBlocked" /> Automatically change direction</label>
+          <label class="block"><input v-model="advanced.reverseAzimuth" type="checkbox" :disabled="settingsBlocked || advanced.autoChangeDirection" /> Reverse azimuth direction</label>
+          <label class="block"><input v-model="advanced.reverseAltitude" type="checkbox" :disabled="settingsBlocked || advanced.autoChangeDirection" /> Reverse altitude direction</label>
+        </div>
+        <p v-else class="text-sm text-gray-400 mt-2">Additional correction settings are unavailable on this backend.</p>
+        <div class="border-t border-gray-700 mt-4 pt-3 space-y-2">
+          <h3 class="font-semibold">Firmware communication watchdog</h3>
+          <p class="text-sm text-gray-400">When enabled, the firmware can stop motion if communication is lost. This setting persists on the device. Connect to this RPA over Wi-Fi to read or change it; then switch back to USB if desired.</p>
+          <p v-if="watchdogUnavailable || watchdog?.code === 'unsupported'" role="status">Watchdog control is unavailable on this backend or device.</p>
+          <p v-else-if="watchdog?.code === 'wifi_required'" role="status">Connect to this RPA over Wi-Fi to read or change the watchdog; then switch back to USB if desired.</p>
+          <p v-else-if="!watchdog || !watchdog.supported || watchdog.enabled === null" role="status">Cannot read the watchdog. Check the RPA network connection and refresh.</p>
+          <template v-else>
+            <p role="status">Current device state: {{ watchdog.enabled ? "Enabled" : "Disabled" }}</p>
+            <p v-if="!watchdog.enabled" class="text-amber-300">Communication-loss protection is disabled on the device.</p>
+            <label>Requested state
+              <select v-model="watchdogChoice" class="field" :disabled="deviceSettingsBlocked">
+                <option :value="true">Enabled</option><option :value="false">Disabled</option>
+              </select>
+            </label>
+            <label v-if="watchdogChoice === false && watchdog.enabled" class="block text-amber-300">
+              <input v-model="confirmWatchdogOff" type="checkbox" /> I understand that disabling the watchdog removes automatic communication-loss protection.
+            </label>
+            <button class="tns-btn-secondary" :disabled="deviceSettingsBlocked || watchdogChoice === watchdog.enabled || (watchdogChoice === false && !confirmWatchdogOff)" @click="applyWatchdog">Apply watchdog setting</button>
+            <p v-if="deviceSettingsBlocked" class="text-sm text-gray-400">Connect the RPA and wait until it is idle and ready to change this setting.</p>
+          </template>
+        </div>
         <p class="text-sm text-gray-400 mt-2">
           Firmware backlash compensation and hardware limits are preserved.
         </p>
@@ -428,7 +449,6 @@
             stopping ||
             pendingStart ||
             motionInhibited ||
-            jogActive ||
             status.jogActive ||
             running ||
             !status.connected ||
@@ -469,7 +489,6 @@ import websocket from "@/services/websocketTppa";
 import { buildTppaStartMessage } from "@/utils/tppaStart";
 import { rpaRequest } from "../api";
 import { startAutomaticAlignment } from "../workflow";
-import { createJogController } from "../jog";
 import { connectionForDisplay } from "../connection";
 import { canDisconnect, motionRecovery } from "../motion";
 
@@ -482,26 +501,14 @@ const connectionReady = computed(
   () => typeof status.value.connected === "boolean",
 );
 const manualStep = ref(30);
-const manualMode = ref("step");
-const jogActive = ref(false);
 const deviceSettingsLoaded = ref(false);
 let settingsGeneration = 0;
+let watchdogGeneration = 0;
 const deviceSettings = ref({
   speedLevel: 1,
   backlashEnabled: false,
   azSteps: 0,
   altSteps: 0,
-});
-let activePointer = null;
-let suppressClick = false;
-const jog = createJogController({
-  request: rpaRequest,
-  onError: (e) => {
-    error.value = e.message;
-  },
-  onChange: (active) => {
-    jogActive.value = active;
-  },
 });
 const transport = ref("wifi");
 const address = ref("mlastrorpa.local");
@@ -521,6 +528,14 @@ const factor = ref(0.75);
 const maxStep = ref(120);
 const settle = ref(3);
 const pauseFirst = ref(true);
+const advanced = ref({});
+const overshootDirection = ref("off");
+const watchdog = ref(null);
+const watchdogChoice = ref(null);
+const confirmWatchdogOff = ref(false);
+const watchdogUnavailable = ref(false);
+const diagnostics = ref(null);
+const durationDisplay = (value) => Number.isFinite(value) ? `${value} ms` : "unknown";
 const busy = ref(false);
 const pendingStart = ref(false);
 const stopping = ref(false);
@@ -537,11 +552,12 @@ const manualBlockReason = computed(() => {
   if (status.value.automationEnabled || status.value.sessionRunning)
     return "Automated RPA alignment is active. Stop it before making manual adjustments.";
   if (status.value.manualMoveActive) return "The previous step is still completing.";
-  if (status.value.jogActive || jogActive.value) return "Release the current jog before another adjustment.";
+  if (status.value.jogActive) return "A previous continuous movement is active. Use Stop before another adjustment.";
   if (busy.value) return "Waiting for the current request to finish.";
   if (status.value.deviceStatus !== "READY") return "Waiting for fresh READY telemetry from the RPA.";
   return "";
 });
+const settingsBlocked = computed(() => busy.value || stopping.value || running.value || pendingStart.value || status.value.automationEnabled || status.value.jogActive);
 const manualBlocked = computed(() => Boolean(manualBlockReason.value));
 const deviceSettingsBlocked = computed(
   () =>
@@ -554,7 +570,6 @@ const deviceSettingsBlocked = computed(
     status.value.automationEnabled ||
     status.value.manualMoveActive ||
     status.value.jogActive ||
-    jogActive.value ||
     status.value.deviceStatus !== "READY",
 );
 let poll,
@@ -564,17 +579,17 @@ let startAckTimer;
 watch(
   () => status.value.connected,
   (connected, previous) => {
-    if (connected && !previous) loadDeviceSettings();
+    if (connected && !previous) { loadDeviceSettings(); loadWatchdog(); }
     if (!connected) {
       ++settingsGeneration;
+      ++watchdogGeneration;
       deviceSettingsLoaded.value = false;
-      releaseJog();
+      watchdog.value = null;
+      confirmWatchdogOff.value = false;
     }
   },
 );
-watch(motionInhibited, (inhibited) => {
-  if (inhibited) releaseJog();
-});
+watch(watchdogChoice, () => { confirmWatchdogOff.value = false; });
 watch(transport, (value) => {
   if (value === "usb") discoverUsb();
   else ++usbDiscoveryGeneration;
@@ -602,6 +617,7 @@ const refreshConnection = () =>
     if (transport.value === "usb") await discoverUsb();
     await refresh();
     if (status.value.connected) await loadDeviceSettings();
+    await loadWatchdog();
   });
 async function refresh() {
   status.value = await rpaRequest("status");
@@ -638,35 +654,55 @@ const connect = () =>
     notice.value = "Connected. Save a positive tolerance before starting.";
   });
 const disconnect = () => run(() => rpaRequest("disconnect", {}));
-function releaseJog() {
-  activePointer = null;
-  jog.stop();
-}
-function pressArrow(event, axis, direction) {
-  if (manualMode.value === "step") suppressClick = false;
-  if (
-    manualMode.value !== "jog" ||
-    manualBlocked.value ||
-    jogActive.value ||
-    event.button !== 0
-  )
-    return;
-  event.preventDefault();
-  suppressClick = true;
-  activePointer = event.pointerId;
-  event.currentTarget.setPointerCapture(event.pointerId);
-  jog.start(axis, direction);
-}
-function releaseArrow(event) {
-  if (activePointer === event.pointerId) releaseJog();
-}
-function arrowClick(axis, direction) {
-  if (suppressClick) {
-    suppressClick = false;
-    return;
+const reconnect = () => run(async () => {
+  await rpaRequest("reconnect", {});
+  await loadWatchdog();
+  notice.value = "Reconnect requested. Check that the device is ready before moving.";
+});
+async function loadWatchdog() {
+  const generation = ++watchdogGeneration;
+  try {
+    const result = await rpaRequest("watchdog");
+    if (generation !== watchdogGeneration) return;
+    if (typeof result?.supported !== "boolean" || ![true, false, null].includes(result.enabled)) throw new Error("Invalid watchdog response");
+    watchdog.value = result;
+    watchdogChoice.value = result.enabled;
+    watchdogUnavailable.value = false;
+  } catch (_) {
+    if (generation !== watchdogGeneration) return;
+    watchdog.value = null;
+    watchdogUnavailable.value = true;
   }
-  if (manualMode.value === "step") manualMove(axis, direction);
+  confirmWatchdogOff.value = false;
 }
+const applyWatchdog = () => run(async () => {
+  if (watchdogChoice.value === false && !confirmWatchdogOff.value) throw new Error("Confirm disabling communication-loss protection first.");
+  const requested = watchdogChoice.value;
+  try {
+    await rpaRequest("watchdog", { enabled: requested, confirmed: requested || confirmWatchdogOff.value });
+  } catch (e) {
+    watchdog.value = null;
+    confirmWatchdogOff.value = false;
+    throw e;
+  }
+  await loadWatchdog();
+  if (!watchdog.value?.supported || watchdog.value.enabled !== requested) throw new Error("Watchdog state could not be confirmed. Refresh and check the device.");
+  notice.value = "Watchdog setting confirmed on the device.";
+});
+const checkConnection = () => run(async () => {
+  diagnostics.value = null;
+  diagnostics.value = await rpaRequest("diagnostics");
+});
+const downloadDiagnostics = () => run(async () => {
+  const report = await rpaRequest("diagnostics");
+  diagnostics.value = report;
+  const url = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], { type: "application/json" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "mlastro-diagnostics.json";
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+});
 async function loadDeviceSettings() {
   const generation = ++settingsGeneration;
   deviceSettingsLoaded.value = false;
@@ -731,7 +767,21 @@ const saveSettings = () =>
       tolerance.value > 10
     )
       throw new Error("Choose a tolerance from 0.1 to 10 arcminutes.");
+    if (!Number.isFinite(factor.value) || factor.value < 0.05 || factor.value > 1 ||
+        !Number.isFinite(maxStep.value) || maxStep.value < 1 ||
+        !Number.isFinite(settle.value) || settle.value < 0 || settle.value > 60)
+      throw new Error("Check correction fraction, maximum step and settling time.");
+    const extra = { ...advanced.value };
+    if (extra.axisMode !== undefined) {
+      if (!["Both", "Auto"].includes(extra.axisMode) || !["off", "up", "down"].includes(overshootDirection.value) ||
+          !Number.isFinite(extra.overshootUpArcMin) || extra.overshootUpArcMin < 0 ||
+          !Number.isFinite(extra.overshootDownArcMin) || extra.overshootDownArcMin < 0)
+        throw new Error("Choose a valid axis mode and non-negative finite overshoot amounts.");
+      extra.overshootUpEnabled = overshootDirection.value === "up";
+      extra.overshootDownEnabled = overshootDirection.value === "down";
+    }
     await rpaRequest("settings", {
+      ...extra,
       factor: factor.value,
       maxStepArcMin: maxStep.value,
       settleSeconds: settle.value,
@@ -824,7 +874,6 @@ const pauseResume = () =>
     if (!sent) throw new Error("TPPA pause/resume could not be sent.");
   });
 async function stop() {
-  releaseJog();
   if (stopping.value) return;
   stopping.value = true;
   clearTimeout(startAckTimer);
@@ -857,8 +906,6 @@ async function stop() {
   }
 }
 onMounted(() => {
-  window.addEventListener("blur", releaseJog);
-  document.addEventListener("visibilitychange", visibilityChanged);
   unsubscribe = websocket.addMessageListener((message) => {
     const response = message?.Response;
     if (response === "stopped procedure") {
@@ -886,6 +933,10 @@ onMounted(() => {
       ? settings.maxStepArcMin : 120;
     settle.value = settings.settleSeconds;
     pauseFirst.value = settings.pauseBeforeFirstCorrection;
+    const keys = ["axisMode", "overshootEnabled", "overshootUpEnabled", "overshootDownEnabled", "overshootUpArcMin", "overshootDownArcMin", "autoChangeDirection", "reverseAzimuth", "reverseAltitude"];
+    advanced.value = status.value.apiVersion >= 2 ? Object.fromEntries(keys.filter((key) => settings[key] !== undefined).map((key) => [key, settings[key]])) : {};
+    overshootDirection.value = settings.overshootUpEnabled && settings.overshootDownEnabled ? "conflict" : settings.overshootUpEnabled ? "up" : settings.overshootDownEnabled ? "down" : "off";
+    await loadWatchdog();
     const options = await apiService.getTppaOptions();
     tolerance.value = options?.Options?.AlignmentTolerance?.Value ?? 0;
   });
@@ -896,15 +947,10 @@ onMounted(() => {
       });
   }, 3000);
 });
-function visibilityChanged() {
-  if (document.hidden) releaseJog();
-}
 onBeforeUnmount(() => {
   ++settingsGeneration;
+  ++watchdogGeneration;
   ++usbDiscoveryGeneration;
-  releaseJog();
-  window.removeEventListener("blur", releaseJog);
-  document.removeEventListener("visibilitychange", visibilityChanged);
   clearInterval(poll);
   unsubscribe?.();
   ++startGeneration;

@@ -26,7 +26,7 @@ Build the Linux ARM64 USB worker as a self-contained single executable:
 dotnet publish src/Pins.MLAstro.UsbWorker -c Release -r linux-arm64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o artifacts/usb-worker
 ```
 
-Install `Pins.MLAstro.UsbWorker` in `usb-worker/` beside the plugin DLL and make it executable. Keep only the executable there, not a tree of framework DLLs that a plugin loader could scan. `MLASTRO_USB_WORKER` overrides its path for testing or packaging. A missing worker is an explicit connection failure; the Linux plugin does not silently fall back to USB I/O inside PINS. Keep the RPA firmware communication watchdog enabled.
+Install `Pins.MLAstro.UsbWorker` in `usb-worker/` beside the plugin DLL and make it executable. Keep only the executable there, not a tree of framework DLLs that a plugin loader could scan. `MLASTRO_USB_WORKER` overrides its path for testing or packaging. A missing worker is an explicit connection failure; the Linux plugin does not silently fall back to USB I/O inside PINS. The plugin preserves the device communication-watchdog setting. Its advanced control reads and verifies explicit changes over an active Wi-Fi connection; it never silently disables it.
 
 The worker integration checks use private Linux pseudoterminals and never open physical equipment:
 
@@ -59,13 +59,16 @@ For installation, stop PINS, back up its existing plugin files, and put the comp
 
 ## ninaAPI
 
-Base: `nitr57/ninaAPI`, commit `f3ab4f052f72df78d88f0d29645924129d083dcc`.
+Base: `nitr57/ninaAPI`, commit `f3ab4f052f72df78d88f0d29645924129d083dcc`. From the upstream repository root, apply both patches and copy the portable build project beside the original:
 
 ```sh
 git apply /path/to/export/integration/ninaAPI/mlastro-relay.patch
+git apply /path/to/export/integration/ninaAPI/focuser-compatibility.patch
+cp /path/to/export/integration/ninaAPI/ninaAPI.Pins.csproj ninaAPI/ninaAPI.Pins.csproj
+dotnet build ninaAPI/ninaAPI.Pins.csproj -c Release -p:PinsLibraries=/absolute/path/to/pins
 ```
 
-Alternatively copy `integration/ninaAPI/MLAstro.cs` into `ninaAPI/WebService/V2/`. Build using that project's PINS-compatible configuration and dependencies. The small `focuser-compatibility.patch` is an optional existing build compatibility fix for the deployed host; review it separately. This export does not include the locally customized full ninaAPI build project or proprietary/host DLLs. `Pins.MLAstro.RelayCompile` is a route/source compile check, not a replacement ninaAPI application.
+The second patch is required by the supplied PINS build project. The project produces `ninaAPI/bin/Release/net10.0/ninaAPI.dll`; it derives from the customized Linux .NET 10 project and maps source paths to a neutral prefix. It requires the target host's compatible PINS reference assemblies, which are not redistributed. Those dependencies and package restore are still required; neither the portable project nor `Pins.MLAstro.RelayCompile` is a standalone replacement for PINS. The portable project fixes the excluded System.Drawing.Common dependency to the resolved 10.0.14 version; package availability and transitive dependency resolution can still affect reproduction. Check that the rebuilt DLL matches the target installation before use.
 
 Back up the installed ninaAPI DLL before replacing it. The relay calls loopback port 1891, exposes only fixed MLAstro routes, and needs no reference to the MLAstro assembly.
 
@@ -85,6 +88,25 @@ npm run build
 
 Use either the patch **or** copy the `plugin` directory to `src/plugins/mlastro-rpa` and apply the websocket send-result change; do not apply both. The patch includes the new plugin and changes `websocketTppa.sendMessage` to return the send result. The shared `src/utils/tppaStart.js` already exists at the pinned base.
 
-The frontend's API address comes from the selected rig. Enable MLAstro RPA in PINS plugin management and open its navigation entry. Configure camera/mount and a positive TPPA tolerance before supervised alignment. The current native app can render these screens through a frontend bundle; local Android package-name/signing modifications used during development are deliberately excluded.
+The frontend's API address comes from the selected rig. Enable MLAstro RPA in PINS plugin management and open its navigation entry. Configure camera/mount and a positive TPPA tolerance before supervised alignment. The current native app can render these screens through a frontend bundle; the optional debug flavor is supplied in `integration/touch-n-stars/android-test-flavor.patch`. Signing keys and local SDK configuration are excluded.
 
 Distribute frontend updates through the project's established release mechanism. Partial frontend copies may leave mismatched assets; preserve an installation backup and replace the entry document only after its referenced assets are present.
+
+## Building an integration bundle
+
+After building and testing a matched plugin, worker, full ninaAPI DLL and web build, assemble from explicit artifact paths. The output directory must not exist. The ninaAPI input must be the complete compatible DLL with relay, not the relay compile test. Inspect the output and its manifest before distribution; this process does not prove the supplied binaries correspond to their claimed versions. Distribute required corresponding source and license notices with the release. Do not include host DLLs, private build projects, signing material or keys.
+
+```sh
+python3 scripts/build_bundle.py --version 0.2.0-experimental --plugin /path/to/NINA.Plugins.MLAstroRPA.Linux.dll --worker /path/to/Pins.MLAstro.UsbWorker --nina-api /path/to/ninaAPI.dll --web-dir /path/to/built-web --output /path/to/new-bundle
+```
+
+Pass `--source-revision` with the 40-hex public corresponding-source commit when assembling a release. The bundle includes the guide, build instructions, upstream attribution, source notice and license texts. The manifest lists the source repository and revision, SHA-256 hashes, components and the intended compatibility baseline; it does not verify the binaries or establish that these artifacts were tested. Optional repeated `--component-version NAME=VERSION` arguments record unverified supplier claims. Hashes are not signatures. See USER-GUIDE.md for check, installation and recovery. Native Android APKs are separate and are not bundled.
+
+
+For artifacts intended for sharing, build with .NET `PathMap` mapping the absolute source workspace to a neutral prefix, for example `-p:PathMap=/absolute/source/workspace=/_` (use the actual platform path and quote the argument where needed). This also applies to the separately built full ninaAPI project. Inspect the resulting binaries and frontend assets for private paths and secrets before release; source mapping and simple string searches do not prove that they contain no private information. Do not include PDBs or other private build outputs in the integration bundle.
+
+## Optional Android test flavor
+
+The distributed experimental APK uses a separate application ID and label so it can coexist with the standard app. After applying the frontend integration to the pinned checkout, apply `integration/touch-n-stars/android-test-flavor.patch`. It adds only the debug flavor and an application-ID-relative FileProvider authority. Use the upstream Android SDK/JDK requirements, build the native web assets, sync Capacitor Android, then run `assembleDebug`. Use your own automatically generated debug signing key; no keys are supplied. The generated APK is a separate artifact from the Pi integration bundle.
+
+The bundle includes build/source/license notices and a source revision. Reproduce its code from that source revision and the pinned upstream checkouts, not from unrelated latest branches. Version declarations identify intended compatibility and are not a claim that an arbitrary collection of files passed hardware tests.

@@ -1,32 +1,34 @@
-# Control API
+# Control API v2
 
-Local service: `http://127.0.0.1:1891`. ninaAPI relay prefix: `/v2/api/mlastro`. JSON request bodies are limited to 4096 bytes. State conflicts return 409, invalid inputs 400. No connection or automation starts on plugin load.
+Plugin 0.2.0. Local service: `http://127.0.0.1:1891`; ninaAPI relay prefix: `/v2/api/mlastro`. Bodies are limited to 4096 bytes. State conflicts return 409 and invalid inputs 400. Loading never connects hardware or arms automation. API v2 reports `continuousJogSupported: false`.
 
-| Method | Path | Purpose / body |
+| Method | Path | Purpose |
 |---|---|---|
-| GET | /status | Connection, active transport/address, device/firmware state, manual/jog and automation/session status |
-| GET | /usb-devices | Metadata list and suggested unambiguous selection; no ports opened |
-| POST | /connect | `{ "transport":"usb", "address":"auto" }`, an explicit Linux serial path, or `{ "transport":"wifi", "address":"mlastrorpa.local" }` |
-| POST | /disconnect | `{}`; disables automation and releases connection |
-| POST | /move | `{ "axis":"az", "direction":1, "arcseconds":5 }`; integer 1–120 arcseconds; axis az/alt; direction -1/+1 |
-| POST | /jog/start | axis and direction; returns leaseId |
-| POST | /jog/renew | leaseId; expires without browser renewal |
-| POST | /jog/stop | leaseId; stale leases cannot stop newer ones |
-| POST | /stop | `{}`; stop/cancel and disarm |
-| GET/POST | /device-settings | speedLevel 1–5, backlashEnabled, integer azSteps/altSteps 0–10000000; explicit apply and fresh readback |
-| GET/POST | /settings | factor 0.1–1, maxStepArcMin 0.1–10, settleSeconds 1–60, pauseBeforeFirstCorrection |
+| GET | /status | Connection, authoritative transport/address, firmware, readiness, faultCode, recoveryAction and automation state |
+| GET | /usb-devices | Metadata and stable paths; no ports opened |
+| POST | /connect | USB address auto or Linux serial path, or Wi-Fi hostname/IP |
+| POST | /disconnect | Attempt Stop, disarm and close; closes even if Stop remains unconfirmed |
+| POST | /reconnect | Reconnect remembered target while idle; never resumes or replays movement |
+| POST | /move | Axis az/alt, direction -1/+1, integer arcseconds 1–120; UI offers 5/10/30/60/120 |
+| POST | /stop | Stop/cancel and disarm |
+| GET/POST | /device-settings | Firmware speed 1–5, backlash enabled, integer AZ/ALT backlash steps; apply/readback |
+| GET/POST | /settings | Correction settings below |
+| GET | /watchdog | Device state: supported, enabled, code; unknown is null |
+| POST | /watchdog | enabled and confirmed booleans; confirmation required to disable; ACK and fresh readback |
+| GET | /diagnostics | Allowlisted report and bounded local Pi power checks; no settings changed |
 | POST | /discover | Capability-only TPPA exchange |
 | POST | /select-controller | Select RPA for the next automated run |
-| POST | /automation | enabled boolean; arming requires confirmed READY hardware |
+| POST | /automation | Arm/disarm; does not itself start TPPA |
+| POST | /jog/start, /jog/renew, /jog/stop | Retired: 410, no movement, including legacy relay routes |
 
-The frontend orchestrates preflight, controller selection, arming and TPPA websocket start. The automation endpoint alone does not launch TPPA. Pending starts expire; completion/cancellation returns TPPA's correction selection to None. Connect has a 45-second request deadline for multiple USB candidates; relay timeout is 50 seconds and frontend connect timeout 55 seconds. Other local operations retain a 10-second request deadline.
+Correction settings require factor 0.05–1, maxStepArcMin at least 1 (default 120, no added upper ceiling), settleSeconds 0–60 and pauseBeforeFirstCorrection. Optional fields preserve profile values when omitted: axisMode Both/Auto, overshootEnabled, overshootUpEnabled, overshootDownEnabled, finite nonnegative overshootUpArcMin/overshootDownArcMin, autoChangeDirection, reverseAzimuth and reverseAltitude. Overshoot directions are exclusive. Manual reversal changes require automatic direction changes off. Settings cannot change during an RPA automated session.
 
-`pauseBeforeFirstCorrection` pauses before RPA correction, after TPPA's reference sweep; it does not prevent the initial mount movements. Full sky acceptance remains pending.
+Watchdog control requires an active Wi-Fi connection to the same RPA; writes also require fresh READY and no RPA operation. USB users switch to Wi-Fi to configure this persistent firmware setting, then may switch back. A saved Wi-Fi address alone cannot authorize changing a USB-connected device. GET returns wifi_required outside Wi-Fi. Unsupported, unavailable and unverified states are distinct from a verified enabled/disabled state. Stop cancels management requests. This firmware heartbeat ESTOP is separate from manual Stop and host timeouts.
 
-The status response includes `motionInhibited`, `motionState` (`Ready`, `Stopping`, or `Faulted`) and `motionFault`. A failed axis release, uncertain transport write, failed STOP or missing post-STOP READY confirmation latches a fault. Manual movement, jog and automation remain blocked even if an old telemetry snapshot says READY. Disconnect remains available; a failed physical stop is still reported as a conflict after the connection closes.
+The frontend performs preflight, selection, arming and TPPA websocket start. Save reads TPPA tolerance back before claiming success. Pause before first correction applies after the mount's reference sweep. Completion/cancellation restores ordinary TPPA behavior. Pending starts expire after 20 seconds. Connect/reconnect have a 45-second local deadline, relay 50 and frontend 55 seconds. Other local mutations have a 10-second deadline.
 
-Recovery requires an explicit new connection, completed old writes/cancellation/cleanup, and fresh explicit READY telemetry across the settling interval. Reconnection never resumes movement. A newer Stop or failure invalidates an in-progress recovery. STOP attempts axis release and the general stop independently and disarms automation/releases TPPA ownership even when either attempt fails.
+motionInhibited, motionState and motionFault distinguish a latched fault from cached device READY. Fault codes include firmware_watchdog, telemetry_timeout, write_unconfirmed, stop_unconfirmed and connection_lost. Reconnect requires no tracked movement/session and fresh READY if the old link is connected. Otherwise Disconnect attempts Stop and closes the old link; Connect performs identity and fresh-READY recovery. Recovery never resumes movement.
 
-Linux USB is owned by the isolated worker. Status includes `usbHeartbeatIsolated` so clients can identify that transport. The worker sends queries every 200 ms and allows fifteen seconds of idle device silence. Wi-Fi retains its five-second link watchdog. Telemetry older than one second reports `deviceStatus: "STALE"` and cannot authorize movement or automation; a worker waiting for confirmed motor settling reports `SETTLING`. Idle reply gaps can recover on fresh telemetry without reconnecting. Firmware heartbeat ESTOP always latches a fault.
+Diagnostics allow only numeric versions, transport/readiness/fault categories, observed telemetry timing, watchdog known state, Pi power flags and up to 50 timestamped event codes. Addresses, SSIDs, credentials, serials, usernames, paths, sky coordinates, images, profiles, arbitrary exceptions and raw logs are excluded. Timestamps reveal usage times: review before sharing. Timing is observed by the plugin, not a lossless USB bus trace.
 
-The worker's physical writes have a 250 ms deadline, with STOP prioritized over queued queries and normal commands. Session and generation fences plus monotonic command expiry prevent late movement dispatch. It permits idle parent pauses up to thirty seconds while maintaining firmware heartbeats; during actual movement, a parent heartbeat gap exceeding 900 ms or telemetry older than one second triggers STOP and a latched fault. Parent death or IPC loss stops/releases the identified controller and retires the process. The legacy in-process write budgets remain in the source but are not used by the isolated Linux USB transport. Reconnection waits for preceding Stop and worker cleanup to finish.
+Linux USB has an isolated worker polling every 200 ms. USB and Wi-Fi allow 15 seconds of link silence. New moves require fresh READY within one second; a correction at dispatch waits up to 15 seconds for a fresh sample before sending once. Finite movements allow 15 seconds without telemetry and 30 seconds of parent scheduling delay. Continuous mode is rejected. Parent death/IPC loss attempts Stop/release. Native write timeout is 250 ms with a 300 ms bounded wait; uncertainty faults the link. Generation fences and expiry reject late motion. Firmware watchdog state changes only by explicit verified user request.

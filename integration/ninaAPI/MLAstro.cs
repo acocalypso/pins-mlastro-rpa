@@ -16,6 +16,14 @@ public partial class ControllerV2
     public Task MlastroStatus() => RelayMlastroAsync("status", false);
     [Route(HttpVerbs.Get, "/mlastro/settings")]
     public Task MlastroSettings() => RelayMlastroAsync("settings", false);
+    [Route(HttpVerbs.Get, "/mlastro/watchdog")]
+    public Task MlastroWatchdog() => RelayMlastroAsync("watchdog", false);
+    [Route(HttpVerbs.Post, "/mlastro/watchdog")]
+    public Task MlastroConfigureWatchdog() => RelayMlastroAsync("watchdog", true);
+    [Route(HttpVerbs.Get, "/mlastro/diagnostics")]
+    public Task MlastroDiagnostics() => RelayMlastroAsync("diagnostics", false);
+    [Route(HttpVerbs.Post, "/mlastro/reconnect")]
+    public Task MlastroReconnect() => RelayMlastroAsync("reconnect", true);
     [Route(HttpVerbs.Post, "/mlastro/connect")]
     public Task MlastroConnect() => RelayMlastroAsync("connect", true);
     [Route(HttpVerbs.Post, "/mlastro/disconnect")]

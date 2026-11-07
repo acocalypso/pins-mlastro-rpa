@@ -1,0 +1,30 @@
+diff --git a/android/app/build.gradle b/android/app/build.gradle
+index 32b099a..b7977e1 100644
+--- a/android/app/build.gradle
++++ b/android/app/build.gradle
+@@ -28,6 +28,12 @@ android {
+         }
+     }
+     buildTypes {
++        debug {
++            applicationIdSuffix ".mlastro"
++            versionNameSuffix "-mlastro-test"
++            resValue "string", "app_name", "Touch-N-Stars MLAstro Test"
++            resValue "string", "title_activity_main", "Touch-N-Stars MLAstro Test"
++        }
+         release {
+             signingConfig = signingConfigs.release
+             minifyEnabled = true
+diff --git a/android/app/src/main/AndroidManifest.xml b/android/app/src/main/AndroidManifest.xml
+index 7964037..272dea1 100644
+--- a/android/app/src/main/AndroidManifest.xml
++++ b/android/app/src/main/AndroidManifest.xml
+@@ -48,7 +48,7 @@
+         <!-- FileProvider configuration -->
+         <provider
+             android:name="androidx.core.content.FileProvider"
+-            android:authorities="com.TouchNStars.dev.provider"
++            android:authorities="${applicationId}.provider"
+             android:exported="false"
+             android:grantUriPermissions="true">
+             <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/file_paths" />

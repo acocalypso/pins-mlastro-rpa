@@ -2,6 +2,10 @@
 
 Audited 2026-11-06 against official Windows commit `da3817f26b15ebee6b772dab7ce48644e7eebf4f` (3.3.1.0). The remote HEAD was checked and still matched this commit. The PINS changes were reviewed independently by a read-only QA agent as well as the implementation agent. This is a source/settings comparison, not a claim of complete hardware equivalence.
 
+## Follow-up in 0.2.0
+
+The 2026-11-07 implementation removes continuous jogging and its short deadlines, exposes the previously missing correction controls, classifies fault-driven shutdown as ControllerFault, and waits briefly for fresh telemetry at correction dispatch. It adds verified Wi-Fi watchdog control, explicit reconnect, allowlisted diagnostics and experimental matched bundle tooling. The dated findings below describe the earlier audited snapshot; consult API.md, ARCHITECTURE.md and USER-GUIDE.md for current behavior. Firmware defaults are not changed automatically.
+
 ## Findings and corrections
 
 1. **Correction cap drift was introduced by this integration.** Windows defaults to 120 arcminutes, permits values of at least 1 arcminute, and imposes no upper bound in its setter. The PINS API/UI had a 10-arcminute ceiling while the inherited settings default was 120, so Save failed before writing TPPA tolerance. A later repair set 0.5, but the unchanged planner floors the cap at 1, producing repeated 1-arcminute moves. The correction restores default 120, range 1 and above, and removes the artificial upper limit. Invalid legacy values below 1 fall back to 120; valid existing choices are preserved.

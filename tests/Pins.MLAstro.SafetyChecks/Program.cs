@@ -31,17 +31,10 @@ static class Program
         Parallel.ForEach(epochs, concurrent.FailFromTest);
         Check(concurrent.Inhibited && concurrent.State == "Faulted", "concurrent failure did not latch");
 
-        var releaseFailure = new PluginHarness { FailRelease = true };
-        await MustFail(releaseFailure.StopAsync, "failed release should report stop failure");
-        Check(releaseFailure.GeneralStops == 1, "general STOP not attempted after failed release");
-        Check(releaseFailure.Aborts == 1 && releaseFailure.RunnerStops == 1 && releaseFailure.BridgeDisabled && releaseFailure.ReleasedSelection, "cleanup did not all run");
-        Check(releaseFailure.Faulted, "failed release did not latch fault");
-        await MustFail(() => releaseFailure.ManualMoveAsync("az", 1, 30), "fault allowed manual movement");
-        await MustFail(() => releaseFailure.SetAutomationAsync(true), "fault allowed automation");
-
         var stopFailure = new PluginHarness { FailGeneralStop = true };
         await MustFail(stopFailure.StopAsync, "failed STOP should report failure");
         Check(stopFailure.GeneralStops == 1 && stopFailure.Faulted, "failed STOP did not latch");
+        Check(stopFailure.Aborts == 1 && stopFailure.RunnerStops == 1 && stopFailure.BridgeDisabled && stopFailure.ReleasedSelection, "failed STOP skipped cleanup");
         await MustFail(() => stopFailure.ManualMoveAsync("az", 1, 30), "failed STOP allowed manual movement");
         await MustFail(() => stopFailure.SetAutomationAsync(true), "failed STOP allowed automation");
 

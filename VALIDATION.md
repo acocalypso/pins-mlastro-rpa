@@ -1,5 +1,13 @@
 # Validation snapshot — 2026-11-04
 
+## 0.2.0 release preparation — 2026-11-07
+
+Continuous jogging and its short motion deadlines are removed. New functionality includes explicit reconnect, fault categories and ControllerFault cancellation, verified Wi-Fi communication-watchdog control, editable inherited correction policies, allowlisted diagnostics with read-only Pi power checks, and a versioned integration bundle with idle/relay checks and rollback.
+
+Validation used local Windows and WSL Ubuntu, not physical equipment: 14 frontend tests plus lint/web/Android builds; 16 Linux worker PTY cases; two managed-client pause cases; the full simulated plugin suite with the available TPPA reflection contract, USB ESTOP recovery and complete broker cycle; separate same-listener direct/API reconnect with no movement; a two-second stale dispatch wait followed by one command; watchdog ACK/readback/refusal/redaction checks; extracted Stop/writer checks; and nine installer/bundle tests including mismatch rollback. The full suite caught an actual idle-cleanup fault: Disconnect now waits for worker retirement before returning. PTY-only exclusive-mode cleanup was independently reproduced and is isolated to the fixture.
+
+The user-reported successful sky alignment on 2026-11-06 predates these 0.2.0 changes. No 0.2.0 hardware installation, real watchdog-setting change or clean third-party Pi acceptance is claimed. The live Pi was left unchanged because installation was deferred. See USER-GUIDE.md and UPSTREAM-AUDIT.md.
+
 ## Finite-move telemetry grace
 
 Sky testing exposed two overly broad checks: an active TPPA reference sweep was treated as active RPA movement, and the USB worker applied a one-second jog telemetry deadline to firmware-controlled finite corrections. The parent now tolerates idle session gaps; Wi-Fi silence allows fifteen seconds. Bounded relative steps and alignment corrections allow fifteen seconds without telemetry, while continuous jogs retain short release/liveness deadlines. Firmware watchdog configuration is not changed by these binaries.

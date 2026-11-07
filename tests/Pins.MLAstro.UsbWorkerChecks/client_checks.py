@@ -81,16 +81,15 @@ def active_pause(harness, worker):
     parent = Parent(harness, worker, firmware)
     try:
         parent.prepare()
+        assert parent.call('send', text='JoRe:1\n', motion=False)['ok']
         assert parent.call('send', text='MAzR:1\n', motion=True)['ok']
         firmware.ready = False
-        started = time.monotonic()
         os.kill(parent.proc.pid, signal.SIGSTOP)
-        wait_until(lambda: firmware.count('STOP:1') > 0, 1.8, 'worker did not STOP while parent was paused')
-        assert time.monotonic()-started < 1.8
+        time.sleep(3)
+        assert firmware.count('STOP:1') == 0, 'finite move inherited obsolete jog deadline'
         os.kill(parent.proc.pid, signal.SIGCONT)
-        parent.take('fault')
-        assert not parent.call('send', text='MAzL:1\n', motion=True)['ok']
-        assert firmware.count('MAzL:1') == 0
+        assert parent.call('status')['connected']
+        assert firmware.count('MAzR:1') == 1, 'movement replayed after parent pause'
     finally:
         parent.close()
         firmware.close()
@@ -100,4 +99,4 @@ if __name__ == '__main__':
     if sys.platform != 'linux' or len(sys.argv) != 3:
         raise SystemExit('Usage on Linux: client_checks.py <ClientHarness> <USB worker>')
     idle_pause(*sys.argv[1:]); print('PASS managed parent SIGSTOP: idle USB heartbeat survives', flush=True)
-    active_pause(*sys.argv[1:]); print('PASS managed parent SIGSTOP: active motion stops and cannot resume', flush=True)
+    active_pause(*sys.argv[1:]); print('PASS managed parent SIGSTOP: finite move tolerates scheduling pause without replay', flush=True)

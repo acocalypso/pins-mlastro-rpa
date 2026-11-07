@@ -15,3 +15,5 @@ Linux changes include removal of desktop/WMI/style dependencies, guarded Windows
 System.IO.Ports and Newtonsoft.Json are Microsoft/MIT and MIT dependencies respectively; dependency packages are restored by their projects and are not included as binaries here. Installed PINS/TPPA assemblies are required for host compatibility and tests but are not redistributed. The diagnostic projects are separate from the movement-capable plugin.
 
 Export-only changes replace local library paths with PinsLibraries configuration and test runtime paths with PINS_HOME/TPPA_ASSEMBLY environment variables. No device profiles, account-specific configuration, build caches, private keys or Git history are included.
+
+Version 0.2.0 also includes a portable `integration/ninaAPI/ninaAPI.Pins.csproj` for rebuilding the full relay against installed PINS assemblies, and an optional Android debug-flavor patch corresponding to the test APK. No signing keys or host assemblies are included. The self-contained worker's runtime notices are in `licenses/` and are included in binary integration bundles.

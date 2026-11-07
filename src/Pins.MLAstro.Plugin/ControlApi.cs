@@ -50,21 +50,23 @@ public sealed class ControlApi : IDisposable
             else if (context.Request.HttpMethod == "GET" && path == "/usb-devices") result = plugin.GetUsbDevices();
             else if (context.Request.HttpMethod == "GET" && path == "/settings") result = plugin.GetCorrectionSettings();
             else if (context.Request.HttpMethod == "GET" && path == "/device-settings") result = plugin.GetDeviceSettings();
+            else if (context.Request.HttpMethod == "GET" && path == "/watchdog") result = await plugin.GetWatchdogAsync(shutdown.Token);
+            else if (context.Request.HttpMethod == "GET" && path == "/diagnostics") result = await plugin.GetDiagnosticsAsync(shutdown.Token);
             else if (context.Request.HttpMethod == "POST")
             {
                 if (context.Request.ContentLength64 < 0 || context.Request.ContentLength64 > 4096)
                     throw new ApiException(413, "A JSON body of at most 4096 bytes is required.");
                 using var deadline = CancellationTokenSource.CreateLinkedTokenSource(shutdown.Token);
-                deadline.CancelAfter(TimeSpan.FromSeconds(path == "/connect" ? 45 : 10));
+                deadline.CancelAfter(TimeSpan.FromSeconds(path is "/connect" or "/reconnect" ? 45 : 10));
                 var bytes = new byte[(int)context.Request.ContentLength64];
                 await context.Request.InputStream.ReadExactlyAsync(bytes, deadline.Token);
                 using var body = JsonDocument.Parse(bytes);
                 var root = body.RootElement;
                 switch (path)
                 {
-                    case "/jog/start": result = new { leaseId = await plugin.StartJogAsync(root.GetProperty("axis").GetString(), root.GetProperty("direction").GetInt32()) }; break;
-                    case "/jog/renew": await plugin.RenewJogAsync(root.GetProperty("leaseId").GetString()); result = plugin.GetStatus(); break;
-                    case "/jog/stop": await plugin.StopJogAsync(root.GetProperty("leaseId").GetString()); result = plugin.GetStatus(); break;
+                    case "/jog/start": case "/jog/renew": case "/jog/stop": throw new ApiException(410, "Continuous jogging has been removed. Update the interface and use fixed-size steps.");
+                    case "/reconnect": result = await plugin.ReconnectAsync(deadline.Token); break;
+                    case "/watchdog": result = await plugin.ConfigureWatchdogAsync(root.GetProperty("enabled").GetBoolean(), root.TryGetProperty("confirmed", out var confirmed) && confirmed.GetBoolean(), deadline.Token); break;
                     case "/device-settings": result = await plugin.ConfigureDeviceAsync(new(root.GetProperty("speedLevel").GetInt32(), root.GetProperty("backlashEnabled").GetBoolean(), root.GetProperty("azSteps").GetInt32(), root.GetProperty("altSteps").GetInt32()), deadline.Token); break;
                     case "/connect":
                         var transport = root.GetProperty("transport").GetString();
@@ -78,7 +80,9 @@ public sealed class ControlApi : IDisposable
                     case "/discover": result = await plugin.DiscoverTppaAsync(deadline.Token); break;
                     case "/select-controller": await plugin.SelectForTppaAsync(); result = new { selected = true }; break;
                     case "/settings":
-                        await plugin.ConfigureCorrectionAsync(root.GetProperty("factor").GetDouble(), root.GetProperty("maxStepArcMin").GetDouble(), root.GetProperty("settleSeconds").GetDouble(), root.GetProperty("pauseBeforeFirstCorrection").GetBoolean());
+                        await plugin.ConfigureCorrectionAsync(root.GetProperty("factor").GetDouble(), root.GetProperty("maxStepArcMin").GetDouble(), root.GetProperty("settleSeconds").GetDouble(), root.GetProperty("pauseBeforeFirstCorrection").GetBoolean(), new CorrectionOptions(
+                            Text(root, "axisMode"), Bool(root, "overshootEnabled"), Bool(root, "overshootUpEnabled"), Bool(root, "overshootDownEnabled"),
+                            Number(root, "overshootUpArcMin"), Number(root, "overshootDownArcMin"), Bool(root, "autoChangeDirection"), Bool(root, "reverseAzimuth"), Bool(root, "reverseAltitude")));
                         result = plugin.GetCorrectionSettings(); break;
                     default: throw new ApiException(404, "Unknown operation.");
                 }
@@ -103,6 +107,9 @@ public sealed class ControlApi : IDisposable
         catch (HttpListenerException) { }
         catch (ObjectDisposedException) { }
     }
+    private static bool? Bool(JsonElement root, string key) => root.TryGetProperty(key, out var value) ? value.GetBoolean() : null;
+    private static double? Number(JsonElement root, string key) => root.TryGetProperty(key, out var value) ? value.GetDouble() : null;
+    private static string Text(JsonElement root, string key) => root.TryGetProperty(key, out var value) ? value.GetString() : null;
     private static async Task ReplyAsync(HttpListenerResponse response, int code, object payload)
     {
         var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(payload));

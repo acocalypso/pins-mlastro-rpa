@@ -7,7 +7,6 @@ partial class PluginHarness
     private int activeStops;
     private readonly MotionSafety motionSafety = new();
     private readonly FakeSerial Serial = new();
-    private readonly FakeJog jog = new();
     private readonly FakeRunner Runner = new();
     private readonly FakeBridge Bridge = new();
     private readonly FakeSettings Settings = new();
@@ -22,7 +21,6 @@ partial class PluginHarness
     private DateTime connectedAt = DateTime.UtcNow;
     private bool IsHardwareConnected => true;
     public PluginHarness() { hardware = new FakeHardware(Serial); }
-    public bool FailRelease { set => jog.Fail = value; }
     public bool FailGeneralStop { set => hardware.Fail = value; }
     public bool SingleReadyFrame { set => hardware.SingleReadyFrame = value; }
     public int GeneralStops => hardware.Stops;
@@ -31,12 +29,14 @@ partial class PluginHarness
     public bool BridgeDisabled => !Bridge.Enabled;
     public bool ReleasedSelection { get; private set; }
     public bool Faulted => motionSafety.Inhibited && motionSafety.State == "Faulted";
-    public void SetIdle() { jog.Active = false; Runner.IsSessionRunning = false; }
+    public void SetIdle() { Runner.IsSessionRunning = false; }
     public Task HoldAdmissions() => controlGate.WaitAsync();
     public void ReleaseAdmissions() => controlGate.Release();
     public void OnManualCancellation(Action callback) { manualCancellation = new(); manualCancellation.Token.Register(callback); }
     public void SetManualObserver(Task task) => manualTask = task;
     public Task RecoverForTest() { hardware.StartTelemetry(); return RecoverConnectionAsync(stopGeneration, motionSafety.Epoch, CancellationToken.None); }
+    private void RecordEvent(DiagnosticEventCode code) { }
+    private void CancelManagement() { }
     private void ReleaseTppaSelection() => ReleasedSelection = true;
     private void SelectTppaForOneRun() { }
     private Task ExpirePendingStartAsync(CancellationTokenSource token) => Task.CompletedTask;
@@ -52,16 +52,6 @@ class FakeSerial
     public bool IsDeviceIdle => true;
     public void CancelPendingMotion() => MotionWritesBlocked = true;
     public void AllowMotion() => MotionWritesBlocked = false;
-}
-class FakeJog
-{
-    public bool Fail { get; set; }
-    public bool Active { get; set; } = true;
-    public bool IsQuiescent => true;
-    public void Fence() { }
-    public void Unfence() { }
-    public void ResetAfterReconnect() { }
-    public Task StopAsync() => Fail ? Task.FromException(new InvalidOperationException("release failed")) : Task.CompletedTask;
 }
 class FakeHardware(FakeSerial serial)
 {
@@ -86,7 +76,7 @@ class FakeHardware(FakeSerial serial)
         return Task.FromResult(!Fail);
     }
 }
-enum BridgeReason { UserStop, BrokerDisabled }
+enum BridgeReason { UserStop, BrokerDisabled, ControllerFault }
 class FakeRunner
 {
     public bool IsSessionRunning { get; set; } = true;
@@ -98,3 +88,5 @@ class FakeRunner
 }
 class FakeBridge { public bool Enabled { get; set; } = true; }
 class FakeSettings { public bool TppaBrokerEnabled { get; set; } }
+
+enum DiagnosticEventCode { Connected, Stopped, Fault }

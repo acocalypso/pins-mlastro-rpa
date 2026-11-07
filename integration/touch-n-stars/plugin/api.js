@@ -10,7 +10,7 @@ export async function rpaRequest(operation, body) {
       url: `${BASE_URL}/mlastro/${operation}`,
       method: body === undefined ? 'GET' : 'POST',
       data: body,
-      timeout: operation === 'connect' ? 55000 : 16000,
+      timeout: operation === 'connect' || operation === 'reconnect' ? 55000 : 16000,
     });
     return response.data;
   } catch (error) {

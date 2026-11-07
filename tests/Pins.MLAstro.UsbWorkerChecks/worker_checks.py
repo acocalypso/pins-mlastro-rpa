@@ -169,6 +169,7 @@ def prepare(worker):
     worker.event(lambda x: x.get('type') == 'line' and x.get('text', '').lower().startswith('ok,firmware'))
     worker.event(lambda x: x.get('type') == 'line' and x.get('text', '').startswith('<READY|'))
     expect_ack(worker, 'allow', generation=0)
+    expect_ack(worker, 'send', generation=0, text='JoRe:1\n', expiresAt=ticks(2))
 
 
 def idle_heartbeat(worker, firmware):
@@ -190,7 +191,7 @@ def active_lease_timeout(worker, firmware):
     worker.send('ping')
     expect_ack(worker, 'send', generation=0, text='MAzR:1\n', expiresAt=ticks(2))
     wait_until(lambda: firmware.count('MAzR:1'), message='motion not sent')
-    wait_until(lambda: firmware.count('STOP:1'), 3, 'active parent timeout did not STOP')
+    wait_until(lambda: firmware.count('STOP:1'), 33, 'finite-move parent timeout did not STOP')
     worker.event(lambda x: x.get('type') == 'fault', 3)
     before = firmware.count('MAlU:1')
     expect_ack(worker, 'send', expected=False, generation=0, text='MAlU:1\n', expiresAt=ticks(2))
@@ -254,12 +255,12 @@ def active_telemetry_silence(worker, firmware):
     worker.send('ping')
     expect_ack(worker, 'send', generation=0, text='MAzR:1\n', expiresAt=ticks(2))
     firmware.telemetry = False
-    deadline = time.monotonic() + 4
+    deadline = time.monotonic() + 17
     while time.monotonic() < deadline and not firmware.count('STOP:1'):
         worker.send('ping')
         time.sleep(.15)
     assert firmware.count('STOP:1'), 'active stale telemetry did not trigger STOP despite live parent'
-    worker.event(lambda x: x.get('type') == 'fault', 2)
+    worker.event(lambda x: x.get('type') == 'fault', 3)
     expect_ack(worker, 'send', expected=False, generation=0, text='MAlU:1\n', expiresAt=ticks(2))
     assert firmware.count('MAlU:1') == 0
 
@@ -289,6 +290,12 @@ def relative_step_telemetry_recovery(worker, firmware):
     assert not firmware.count('STOP:1'), 'relative step misclassified as a continuous jog'
     assert not any(e.get('type') == 'fault' for e in worker.events)
     worker.send('ping')
+
+
+def continuous_commands_rejected(worker, firmware):
+    prepare(worker)
+    expect_ack(worker, 'send', expected=False, generation=0, text='JoRe:0\n', expiresAt=ticks(2))
+    assert firmware.count('JoRe:0') == 0
 
 
 def idle_telemetry_recovery(worker, firmware):
@@ -371,7 +378,7 @@ def main():
     tests = [(idle_heartbeat, True), (active_lease_timeout, True), (eof_stops, True),
              (identity_guard, False), (stale_requests, True), (busy_no_ready, True),
              (firmware_estop, True), (active_telemetry_silence, True),
-             (finite_telemetry_recovery, True), (relative_step_telemetry_recovery, True),
+             (finite_telemetry_recovery, True), (relative_step_telemetry_recovery, True), (continuous_commands_rejected, True),
              (idle_telemetry_recovery, True), (idle_telemetry_timeout, True),
              (fifo_and_timestamps, True), (output_backpressure, True)]
     for test, identity in tests:

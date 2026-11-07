@@ -49,50 +49,43 @@ static class PluginChecks
         }
         plugin.ConfigureCorrectionAsync(0.75, 120, 3, true).GetAwaiter().GetResult();
         Console.WriteLine("PASS upstream correction default, legacy-cap migration and correction ranges");
+        plugin.ConfigureCorrectionAsync(0.75, 120, 3, true, new NINA.Plugins.MLAstroRPA.CorrectionOptions(
+            AxisMode: "Auto", OvershootEnabled: false, OvershootUpEnabled: true, OvershootDownEnabled: false,
+            OvershootUpArcMin: 7, OvershootDownArcMin: 9, AutoChangeDirection: false, ReverseAzimuth: true)).GetAwaiter().GetResult();
+        if (settings.CorrectionAxisMode != MLAstroRPA.Broker.BridgeAxisMode.Auto || settings.CorrectionOvershootEnabled || !settings.CorrectionOvershootUpEnabled || settings.CorrectionOvershootDownEnabled || settings.CorrectionOvershootUpArcMin != 7 || !settings.SoftwareReverseAzimuth)
+            throw new Exception("Advanced correction settings did not round-trip");
+        try {
+            plugin.ConfigureCorrectionAsync(0.75, 120, 3, true, new NINA.Plugins.MLAstroRPA.CorrectionOptions(OvershootUpEnabled: true, OvershootDownEnabled: true)).GetAwaiter().GetResult();
+            throw new Exception("Conflicting overshoot directions accepted");
+        } catch (ArgumentException) { }
+        plugin.ConfigureCorrectionAsync(0.75, 120, 3, true, new NINA.Plugins.MLAstroRPA.CorrectionOptions(
+            AxisMode: "Both", OvershootEnabled: true, OvershootUpEnabled: false, OvershootDownEnabled: true,
+            OvershootUpArcMin: 5, OvershootDownArcMin: 30, ReverseAzimuth: false)).GetAwaiter().GetResult();
+        Console.WriteLine("PASS advanced correction options and conflicting direction validation");
         if (Environment.GetEnvironmentVariable("MLASTRO_SETTINGS_ONLY") == "1") {
             plugin.Teardown().GetAwaiter().GetResult();
+            return 0;
+        }
+        if (Environment.GetEnvironmentVariable("MLASTRO_RECONNECT_ONLY") == "1") {
+            using var firmware = new VirtualRpa();
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+            settings.MlaPort = 1892;
+            if (!plugin.ConnectAsync(true, "127.0.0.1", deadline.Token).GetAwaiter().GetResult()) throw new Exception("Initial virtual connection failed");
+            plugin.ReconnectAsync(deadline.Token).GetAwaiter().GetResult();
+            if (!serial.IsConnected || !serial.IsDeviceIdle || !serial.HasFreshTelemetry || plugin.Runner.IsSessionRunning || settings.TppaBrokerEnabled || firmware.ManualCount != 0 || firmware.JogCount != 0 || firmware.AlignmentCount != 0)
+                throw new Exception("Direct reconnect was not fresh, idle and motion-free");
+            using var http = new HttpClient { BaseAddress = new Uri("http://127.0.0.1:1893") };
+            using var response = http.PostAsync("/reconnect", new StringContent("{}", System.Text.Encoding.UTF8, "application/json"), deadline.Token).GetAwaiter().GetResult();
+            if (!response.IsSuccessStatusCode || !serial.IsConnected || !serial.IsDeviceIdle || !serial.HasFreshTelemetry || plugin.Runner.IsSessionRunning || settings.TppaBrokerEnabled || firmware.ManualCount != 0 || firmware.JogCount != 0 || firmware.AlignmentCount != 0)
+                throw new Exception("Reconnect route was not fresh, idle and motion-free: " + (int)response.StatusCode);
+            plugin.DisconnectAsync().GetAwaiter().GetResult();
+            plugin.Teardown().GetAwaiter().GetResult();
+            Console.WriteLine("PASS direct and HTTP reconnect against one virtual listener; no motion or automation");
             return 0;
         }
         UsbChecks.Metadata();
         using (var usbDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(90)))
             UsbChecks.Serial(plugin, usbDeadline.Token).GetAwaiter().GetResult();
-        var fallbackStops = 0;
-        var hung = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var stalled = new NINA.Plugins.MLAstroRPA.JogLease(
-            (_, _, _) => hung.Task,
-            (_, _, _) => Task.CompletedTask,
-            (_, _, _) => { Interlocked.Increment(ref fallbackStops); return Task.CompletedTask; });
-        var watch = System.Diagnostics.Stopwatch.StartNew();
-        try { stalled.StartAsync("az", 1).GetAwaiter().GetResult(); throw new Exception("Stalled transport accepted"); }
-        catch (TimeoutException) { }
-        if (watch.ElapsedMilliseconds > 2000 || fallbackStops != 1 || !stalled.Active || stalled.IsQuiescent) throw new Exception("Stalled send did not remain inhibited");
-        stalled.Fence();
-        try { stalled.ResetAfterReconnect(); throw new Exception("Reset accepted an outstanding callback"); }
-        catch (InvalidOperationException) { }
-        hung.SetResult();
-        if (!SpinWait.SpinUntil(() => stalled.IsQuiescent, 2000)) throw new Exception("Completed callback remained active");
-        stalled.ResetAfterReconnect();
-        if (stalled.Active) throw new Exception("Reconnect did not clear stale lease");
-        stalled.DisposeAsync().AsTask().GetAwaiter().GetResult();
-        Console.WriteLine("PASS stalled transport cannot trap jog stop indefinitely");
-        using (var unblock = new ManualResetEventSlim()) {
-            var releaseCount = 0;
-            var synchronousHang = new NINA.Plugins.MLAstroRPA.JogLease(
-                (_, _, _) => { unblock.Wait(); return Task.CompletedTask; },
-                (_, _, _) => Task.CompletedTask,
-                (_, _, _) => { Interlocked.Increment(ref releaseCount); return Task.CompletedTask; });
-            watch.Restart();
-            try { synchronousHang.StartAsync("az", 1).GetAwaiter().GetResult(); throw new Exception("Blocked callback accepted"); }
-            catch (TimeoutException) { }
-            if (watch.ElapsedMilliseconds > 2000 || releaseCount != 1 || synchronousHang.IsQuiescent)
-                throw new Exception("Synchronous callback initiation trapped release or lost tracking");
-            synchronousHang.Fence();
-            unblock.Set();
-            if (!SpinWait.SpinUntil(() => synchronousHang.IsQuiescent, 2000)) throw new Exception("Callback did not quiesce");
-            synchronousHang.ResetAfterReconnect();
-            synchronousHang.DisposeAsync().AsTask().GetAwaiter().GetResult();
-        }
-        Console.WriteLine("PASS blocking callback initiation remains bounded and tracked");
         using (var http = new HttpClient { BaseAddress = new Uri("http://127.0.0.1:1893") })
         {
             var status = http.GetStringAsync("/status").GetAwaiter().GetResult();
@@ -108,7 +101,7 @@ static class PluginChecks
                 ("/unknown", "{}", 404) })
             {
                 using var response = http.PostAsync(item.Item1, new StringContent(item.Item2, System.Text.Encoding.UTF8, "application/json")).GetAwaiter().GetResult();
-                if ((int)response.StatusCode != item.Item3) throw new Exception("Unexpected control result for " + item.Item1);
+                if ((int)response.StatusCode != item.Item3) throw new Exception("Unexpected control result for " + item.Item1 + ": " + (int)response.StatusCode + " " + response.Content.ReadAsStringAsync().GetAwaiter().GetResult() + "; status=" + http.GetStringAsync("/status").GetAwaiter().GetResult());
                 Console.WriteLine("PASS control route " + item.Item1 + " " + item.Item3);
             }
             using var request = new HttpRequestMessage(HttpMethod.Get, "/status");
@@ -117,6 +110,7 @@ static class PluginChecks
             if ((int)denied.StatusCode != 403) throw new Exception("Cross-origin loopback request accepted");
             Console.WriteLine("PASS loopback origin restriction");
         }
+        if (Environment.GetEnvironmentVariable("MLASTRO_SKIP_TPPA_CONTRACT") != "1") {
         var tppa = AssemblyLoadContext.Default.LoadFromAssemblyPath(Environment.GetEnvironmentVariable("TPPA_ASSEMBLY") ?? throw new InvalidOperationException("Set TPPA_ASSEMBLY to the installed TPPA DLL path."));
         foreach (var pair in new (string Tppa, Type Local)[] {
             ("BridgeCapabilitiesPayload", typeof(MLAstroRPA.Broker.BridgeCapabilities)),
@@ -136,6 +130,7 @@ static class PluginChecks
             }
             Console.WriteLine("PASS installed TPPA payload " + pair.Tppa);
         }
+        } else Console.WriteLine("SKIP installed TPPA reflection contract (MLASTRO_SKIP_TPPA_CONTRACT=1)");
         using (var firmware = new VirtualRpa())
         {
             settings.MlaPort = 1892;
@@ -149,35 +144,26 @@ static class PluginChecks
             if (firmware.Speed != 2 || firmware.AzBack != 78000) throw new Exception("Settings not sent to firmware");
             Console.WriteLine("PASS firmware-backed speed/backlash read, apply and readback");
             using (var http = new HttpClient { BaseAddress = new Uri("http://127.0.0.1:1893") }) {
-                using var bad = http.PostAsync("/device-settings", new StringContent("{\"speedLevel\":6,\"backlashEnabled\":true,\"azSteps\":1,\"altSteps\":1}", System.Text.Encoding.UTF8, "application/json")).GetAwaiter().GetResult();
-                if ((int)bad.StatusCode != 400) throw new Exception("Invalid speed accepted");
-                using var started = http.PostAsync("/jog/start", new StringContent("{\"axis\":\"az\",\"direction\":1}", System.Text.Encoding.UTF8, "application/json")).GetAwaiter().GetResult();
-                started.EnsureSuccessStatusCode();
-                using var body = System.Text.Json.JsonDocument.Parse(started.Content.ReadAsStringAsync().GetAwaiter().GetResult());
-                var lease = body.RootElement.GetProperty("leaseId").GetString()!;
-                try { plugin.ManualMoveAsync("az", 1, 5).GetAwaiter().GetResult(); throw new Exception("Step accepted during jog"); } catch (InvalidOperationException) { }
-                try { plugin.SetAutomationAsync(true).GetAwaiter().GetResult(); throw new Exception("Automation accepted during jog"); } catch (InvalidOperationException) { }
-                for (int i = 0; i < 6; i++) { Task.Delay(150, deadline.Token).GetAwaiter().GetResult(); plugin.RenewJogAsync(lease).GetAwaiter().GetResult(); }
-                if (firmware.JogCount != 1 || firmware.JogStops != 0) throw new Exception("Wi-Fi jog restarted or stopped while renewing");
-                Console.WriteLine("PASS renewed jog stays active and blocks conflicting operations");
-                Task.Delay(1200, deadline.Token).GetAwaiter().GetResult();
-                if (firmware.JogStops != 1) throw new Exception("Lost browser lease did not stop firmware");
-                try { plugin.RenewJogAsync(lease).GetAwaiter().GetResult(); throw new Exception("Expired lease revived"); } catch (InvalidOperationException) { }
-                Console.WriteLine("PASS lost browser heartbeat stops jog and cannot be revived");
-                Task.Delay(200, deadline.Token).GetAwaiter().GetResult();
-                var next = plugin.StartJogAsync("alt", -1).GetAwaiter().GetResult();
-                plugin.StopJogAsync(lease).GetAwaiter().GetResult();
-                if (firmware.JogStops != 1) throw new Exception("Old lease stopped new jog");
-                plugin.StopJogAsync(next).GetAwaiter().GetResult();
-                Task.Delay(250, deadline.Token).GetAwaiter().GetResult();
-                if (firmware.JogStops != 2) throw new Exception("Button release did not stop jog");
-                Console.WriteLine("PASS explicit release stops jog; old leases cannot stop a newer jog");
+                using var retired = http.PostAsync("/jog/start", new StringContent("{}", System.Text.Encoding.UTF8, "application/json")).GetAwaiter().GetResult();
+                if ((int)retired.StatusCode != 410 || firmware.JogCount != 0) throw new Exception("Retired jog route remained active");
+                var diagnostics = http.GetStringAsync("/diagnostics").GetAwaiter().GetResult();
+                if (diagnostics.Contains("127.0.0.1") || diagnostics.Contains("77917")) throw new Exception("Diagnostics leaked endpoint or device configuration");
+                Console.WriteLine("PASS continuous jogging unavailable and redacted diagnostics route");
             }
             using var aligner = new MLAstroRPA.Broker.HardwareAligner(serial);
+            firmware.PauseTelemetry = true;
+            Task.Delay(2000, deadline.Token).GetAwaiter().GetResult();
+            var beforeDispatch = firmware.AlignmentCount;
             var move = aligner.AlignAsync(new MLAstroRPA.Broker.CorrectionPlan {
                 HasMove = true, MoveAzimuth = true, AzimuthMagnitudeArcMin = 0.5, AzimuthRight = true
             }, deadline.Token);
+            Task.Delay(300, deadline.Token).GetAwaiter().GetResult();
+            if (move.IsCompleted || firmware.AlignmentCount != beforeDispatch) throw new Exception("Correction dispatched without fresh telemetry");
+            firmware.PauseTelemetry = false;
             firmware.AlignmentReceived.Task.WaitAsync(deadline.Token).GetAwaiter().GetResult();
+            Task.Delay(250, deadline.Token).GetAwaiter().GetResult();
+            if (firmware.AlignmentCount != beforeDispatch + 1) throw new Exception("Correction was replayed after telemetry resumed");
+            Console.WriteLine("PASS stale dispatch waits for fresh telemetry and sends exactly one correction");
             Task.Delay(300, deadline.Token).GetAwaiter().GetResult();
             firmware.Status = "STOPPING";
             Task.Delay(1800, deadline.Token).GetAwaiter().GetResult();
@@ -215,22 +201,7 @@ static class PluginChecks
             firmware.StopReceived.Task.WaitAsync(deadline.Token).GetAwaiter().GetResult();
             Console.WriteLine("PASS stop reaches virtual busy hardware");
             Task.Delay(250, deadline.Token).GetAwaiter().GetResult();
-            var priorStops = firmware.StopCount;
-            var staleLease = plugin.StartJogAsync("az", 1).GetAwaiter().GetResult();
-            firmware.PauseTelemetry = true;
-            var staleWatch = System.Diagnostics.Stopwatch.StartNew();
-            while (!serial.MotionWritesBlocked && staleWatch.Elapsed < TimeSpan.FromSeconds(4)) {
-                Task.Delay(150, deadline.Token).GetAwaiter().GetResult();
-                try { plugin.RenewJogAsync(staleLease).GetAwaiter().GetResult(); } catch (InvalidOperationException) { }
-            }
-            if (!serial.MotionWritesBlocked || firmware.UnrelatedFrames < 5 || !serial.IsConnected)
-                throw new Exception("Wi-Fi active jog did not fence on stale telemetry while unrelated traffic continued");
-            var stopWatch = System.Diagnostics.Stopwatch.StartNew();
-            while (firmware.StopCount == priorStops && stopWatch.Elapsed < TimeSpan.FromSeconds(3)) Task.Delay(20, deadline.Token).GetAwaiter().GetResult();
-            if (firmware.StopCount == priorStops) throw new Exception("Wi-Fi stale active jog did not send general STOP");
-            firmware.PauseTelemetry = false;
-            try { plugin.DisconnectAsync().GetAwaiter().GetResult(); } catch (InvalidOperationException) { }
-            Console.WriteLine("PASS Wi-Fi active jog fences and stops on stale telemetry despite unrelated inbound traffic");
+            plugin.DisconnectAsync().GetAwaiter().GetResult();
         }
         using (var recoveryFirmware = new VirtualRpa()) {
             using var recoveryDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
