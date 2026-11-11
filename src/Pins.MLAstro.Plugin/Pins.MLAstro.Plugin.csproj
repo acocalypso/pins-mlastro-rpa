@@ -6,10 +6,18 @@
     <Version>0.3.0-beta.2</Version>
     <Nullable>annotations</Nullable>
     <PathMap>$(MSBuildProjectDirectory)=/_/Pins.MLAstro.Plugin</PathMap>
-    
+
   </PropertyGroup>
-  <ItemGroup>
+  <!-- Default: build against the DLLs of an installed PINS (see BUILD.md). -->
+  <ItemGroup Condition="'$(PinsRoot)' == ''">
     <Reference Include="$(PinsLibraries)/*.dll" Exclude="$(PinsLibraries)/System.IO.Ports.dll"><Private>false</Private></Reference>
+  </ItemGroup>
+  <!-- PINS package build: -p:PinsRoot=/path/to/pins builds against the PINS source tree,
+       the same way the other PINS plugin packages do. Host assemblies are not copied. -->
+  <ItemGroup Condition="'$(PinsRoot)' != ''">
+    <ProjectReference Include="$(PinsRoot)/NINA.Plugin/NINA.Plugin.csproj"><Private>false</Private></ProjectReference>
+  </ItemGroup>
+  <ItemGroup>
     <PackageReference Include="System.IO.Ports" Version="10.0.10" ExcludeAssets="runtime" />
   </ItemGroup>
 </Project>
