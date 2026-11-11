@@ -1,6 +1,6 @@
 # Integration bundle and recovery
 
-This is an experimental integration, not a generally validated drop-in release. The tested host baseline is PINS 3.3.0.1058 nightly (.NET 10), TPPA 2.2.8.0, ninaAPI 2.2.15.2, Touch-N-Stars 6.5.0-beta22-beta and RPA firmware 1.13.0. A previous build completed a sky TPPA alignment on November 6. The new 0.2 features and this exact bundle still need supervised hardware and end-to-end acceptance testing; repeated camera stress remains unresolved. Make sure the exact four built components were tested together on your target before installing. A bundle checksum detects accidental changes, not malicious substitution: obtain it through a trusted channel and independently verify its release hash/signature.
+See INSTALL.md in the source repository or the GitHub release instructions for installation. Compatibility baseline: PINS 3.3.0.1058 nightly (.NET 10), TPPA 2.2.8.0, ninaAPI 2.2.15.2, Touch-N-Stars 6.5.0-beta22-beta and RPA firmware 1.13.0.
 
 A bundle contains the Linux plugin, a *full* compatible ninaAPI build containing the relay, and the built web frontend. It does not contain PINS, TPPA, host DLLs, credentials, or a native Android APK. The source export supplies the ninaAPI integration patches and a portable PINS-compatible build project; build the full DLL from the pinned upstream source using compatible PINS dependencies, which are not included. See BUILD.md for source and license obligations. An APK, if needed, is a separate build and installation; this installer does not handle it.
 
@@ -33,4 +33,4 @@ In **Advanced correction settings**, review axis, direction and overshoot option
 
 USB uses in-process serial I/O. There is no USB worker executable and no transport selection setting. Old PINS_MLASTRO_USB_TRANSPORT service overrides are unnecessary and ignored.
 
-The firmware communication watchdog can still stop the RPA if the host pauses. Its enable/disable control requires an active Wi-Fi connection to the RPA. Explicitly select the desired setting there before returning to USB. The plugin never changes it automatically. Disabling it removes the heartbeat-triggered stop; manual Stop and firmware travel limits remain. Camera-load and reconnect testing of this exact beta remain pending.
+The firmware communication watchdog can still stop the RPA if the host pauses. Its enable/disable control requires an active Wi-Fi connection to the RPA. Explicitly select the desired setting there before returning to USB. The plugin never changes it automatically. Disabling it removes the heartbeat-triggered stop; manual Stop and firmware travel limits remain.

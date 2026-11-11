@@ -1,8 +1,8 @@
 # MLAstro One RPA integration for PINS / Touch-N-Stars
 
-Experimental integration 0.3.0-beta.2 for clean-install testing, 2026-11-11.
+Experimental integration 0.3.0-beta.2 for Raspberry Pi, 2026-11-11.
 
-See [RELEASE-NOTES.md](RELEASE-NOTES.md) and GitHub Releases for the matched ARM64 beta bundle.
+See [INSTALL.md](INSTALL.md) for installation and [RELEASE-NOTES.md](RELEASE-NOTES.md) and GitHub Releases for the matched ARM64 beta bundle.
 
 Repository: https://github.com/ydutertre/pins-mlastro-rpa
  This is an experimental Linux port and UI integration, not an official PINS, Touch-N-Stars or MLAstro release.
