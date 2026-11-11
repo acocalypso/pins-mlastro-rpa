@@ -1,6 +1,8 @@
 # MLAstro One RPA integration for PINS / Touch-N-Stars
 
-Experimental integration 0.2.0 for maintainer testing, 2026-11-07.
+Experimental integration 0.3.0-beta.1 for clean-install testing, 2026-11-11.
+
+See [RELEASE-NOTES.md](RELEASE-NOTES.md) and GitHub Releases for the matched ARM64 beta bundle.
 
 Repository: https://github.com/ydutertre/pins-mlastro-rpa
  This is an experimental Linux port and UI integration, not an official PINS, Touch-N-Stars or MLAstro release.
@@ -32,7 +34,7 @@ Real USB firmware/telemetry/settings communication is confirmed. The user report
 
 Controls send real movement commands when connected. A host cannot guarantee delivery of Stop after power or connection loss. Firmware watchdog state is preserved unless the user explicitly changes it; disabling it removes its heartbeat-triggered stop. Do not use this snapshot as an unattended alignment release.
 
-This export contains source and documentation only. It contains no installed PINS assemblies, SSH keys, logs, device profiles, APKs, signing files or compiled binaries. 
+This Git repository contains source and documentation only; compiled beta bundles are distributed separately through GitHub Releases. It contains no installed PINS assemblies, SSH keys, logs, device profiles, APKs, signing files or compiled binaries. 
 
 ## Review / upstreaming
 

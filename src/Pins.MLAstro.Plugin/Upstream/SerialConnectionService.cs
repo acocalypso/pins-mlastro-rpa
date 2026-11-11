@@ -1028,7 +1028,7 @@ namespace MLAstroRPA.Services
                 return false;
             }
 
-            if (OperatingSystem.IsLinux()) {
+            if (OperatingSystem.IsLinux() && !string.Equals(Environment.GetEnvironmentVariable("PINS_MLASTRO_USB_TRANSPORT"), "direct", StringComparison.OrdinalIgnoreCase)) {
                 try { return await ConnectWorkerAsync(portName, startChecks).ConfigureAwait(false); }
                 finally { Interlocked.Exchange(ref _portOpenInProgress, 0); }
             }
