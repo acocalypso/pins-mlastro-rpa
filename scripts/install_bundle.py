@@ -47,7 +47,7 @@ def verify():
         if path.is_symlink(): fail('Symlink in bundle: ' + str(path))
         if path.is_file(): actual.add(path.relative_to(ROOT).as_posix())
     if actual != set(expected) | {'manifest.json'}: fail('Unexpected or missing bundle files')
-    required = {'install_bundle.py', 'USER-GUIDE.md', 'BUILD.md', 'UPSTREAM.md', 'SOURCE-NOTICE.md', 'licenses/MPL-2.0.txt', 'licenses/GPL-3.0.txt', 'licenses/dotnet/LICENSE.txt', 'licenses/dotnet/THIRD-PARTY-NOTICES.txt', 'licenses/system-io-ports/THIRD-PARTY-NOTICES.txt', 'payload/plugin/NINA.Plugins.MLAstroRPA.Linux.dll', 'payload/plugin/usb-worker/Pins.MLAstro.UsbWorker', 'payload/ninaAPI/ninaAPI.dll', 'payload/web/index.html'}
+    required = {'install_bundle.py', 'USER-GUIDE.md', 'BUILD.md', 'UPSTREAM.md', 'SOURCE-NOTICE.md', 'licenses/MPL-2.0.txt', 'licenses/GPL-3.0.txt', 'licenses/dotnet/LICENSE.txt', 'licenses/dotnet/THIRD-PARTY-NOTICES.txt', 'licenses/system-io-ports/THIRD-PARTY-NOTICES.txt', 'payload/plugin/NINA.Plugins.MLAstroRPA.Linux.dll',  'payload/ninaAPI/ninaAPI.dll', 'payload/web/index.html'}
     if not required <= set(expected): fail('Missing required component')
     for rel in expected:
         if rel not in required and not rel.startswith('payload/web/'): fail('Unexpected component: ' + rel)
@@ -217,7 +217,7 @@ def main():
     start_attempted = False
     try:
         for rel, dest in files:
-            atomic_copy(ROOT / rel, dest, rel.endswith('/Pins.MLAstro.UsbWorker'))
+            atomic_copy(ROOT / rel, dest, False)
         start_attempted = True
         service('start', args.service)
         for _ in range(30):

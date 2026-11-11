@@ -1,3 +1,5 @@
+> Current beta: USB is in-process only. References below to the isolated USB worker describe earlier builds and are historical, not current release validation.
+
 # Validation snapshot — 2026-11-04
 
 ## 0.2.0 release preparation — 2026-11-07

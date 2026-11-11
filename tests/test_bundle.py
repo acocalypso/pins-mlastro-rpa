@@ -17,13 +17,13 @@ class BundleChecks(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
-        for n in ['plugin', 'worker', 'api']:
+        for n in ['plugin', 'api']:
             (self.root / n).write_bytes(n.encode())
         (self.root / 'web/assets').mkdir(parents=True)
         (self.root / 'web/index.html').write_text('entry')
         (self.root / 'web/assets/a.js').write_text('asset')
         self.bundle = self.root / 'bundle'
-        subprocess.run([sys.executable, str(SCRIPTS / 'build_bundle.py'), '--version', 'test', '--source-revision', 'a' * 40, '--component-version', 'plugin=declared', '--plugin', str(self.root / 'plugin'), '--worker', str(self.root / 'worker'), '--nina-api', str(self.root / 'api'), '--web-dir', str(self.root / 'web'), '--output', str(self.bundle)], check=True, capture_output=True)
+        subprocess.run([sys.executable, str(SCRIPTS / 'build_bundle.py'), '--version', 'test', '--source-revision', 'a' * 40, '--component-version', 'plugin=declared', '--plugin', str(self.root / 'plugin'), '--nina-api', str(self.root / 'api'), '--web-dir', str(self.root / 'web'), '--output', str(self.bundle)], check=True, capture_output=True)
         self.root_patch = patch.object(installer, 'ROOT', self.bundle)
         self.root_patch.start()
     def tearDown(self):

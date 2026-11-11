@@ -20,42 +20,7 @@ dotnet build tests/Pins.MLAstro.RelayCompile
 
 The plugin references the host's assemblies without copying them. `System.IO.Ports` must be supplied by a compatible PINS runtime. Building does not install, connect to or move equipment.
 
-Build the Linux ARM64 USB worker as a self-contained single executable:
-
-```sh
-dotnet publish src/Pins.MLAstro.UsbWorker -c Release -r linux-arm64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o artifacts/usb-worker
-```
-
-Install `Pins.MLAstro.UsbWorker` in `usb-worker/` beside the plugin DLL and make it executable. Keep only the executable there, not a tree of framework DLLs that a plugin loader could scan. `MLASTRO_USB_WORKER` overrides its path for testing or packaging. A missing worker is an explicit connection failure; the Linux plugin does not silently fall back to USB I/O inside PINS. The plugin preserves the device communication-watchdog setting. Its advanced control reads and verifies explicit changes over an active Wi-Fi connection; it never silently disables it.
-
-The worker integration checks use private Linux pseudoterminals and never open physical equipment:
-
-```sh
-python3 tests/Pins.MLAstro.UsbWorkerChecks/worker_checks.py -- /absolute/path/to/Pins.MLAstro.UsbWorker
-dotnet publish tests/Pins.MLAstro.UsbWorkerChecks/ClientHarness -c Release -r linux-arm64 --self-contained true -o artifacts/client-harness
-python3 tests/Pins.MLAstro.UsbWorkerChecks/client_checks.py /absolute/path/to/ClientHarness /absolute/path/to/Pins.MLAstro.UsbWorker
-```
-
-The client checks pause only their disposable test process with SIGSTOP. Do not substitute the production PINS PID. Set `MLASTRO_USB_WORKER` when running full plugin checks if the worker is not installed beside their plugin DLL.
-
-The standalone adversarial safety checks need only the .NET SDK and PowerShell. They extract the current plugin methods and run with fake collaborators, plus the actual bounded writer:
-
-```powershell
-./tests/Pins.MLAstro.SafetyChecks/run.ps1 -Dotnet dotnet
-```
-
-For the isolated full plugin checks, publish for Linux ARM64, copy the published test directory to a Pi, then run there:
-
-```sh
-dotnet publish tests/Pins.MLAstro.PluginChecks -c Release -r linux-arm64 --self-contained true -o artifacts/plugin-checks -p:PinsLibraries=/absolute/path/to/pins
-export PINS_HOME=/absolute/path/to/installed/pins
-export TPPA_ASSEMBLY=/absolute/path/to/NINA.Plugins.PolarAlignment.dll
-./artifacts/plugin-checks/Pins.MLAstro.PluginChecks
-```
-
-These checks use an in-memory profile, loopback firmware server and private kernel pseudoterminals. They read USB metadata but do not open real USB equipment. Ports 1892/1893 must be free. Do not launch multiple copies concurrently. `PINS_HOME` is a runtime dependency location; `PinsLibraries` is the build reference location.
-
-For installation, stop PINS, back up its existing plugin files, and put the compiled `NINA.Plugins.MLAstroRPA.Linux.dll` in a new `MLAstroRPA.Linux` directory under the installation's versioned NINA plugin root. Restart PINS and verify disconnected/automation-disabled status. Resolve the host and plugin directories from your installation; they are not hardcoded to a particular user account here. Debian packaging is not included.
+USB uses in-process serial I/O. No separate worker executable or service environment setting is required. Firmware communication-watchdog changes require an active Wi-Fi connection and are never automatic.
 
 ## ninaAPI
 
@@ -94,10 +59,10 @@ Distribute frontend updates through the project's established release mechanism.
 
 ## Building an integration bundle
 
-After building and testing a matched plugin, worker, full ninaAPI DLL and web build, assemble from explicit artifact paths. The output directory must not exist. The ninaAPI input must be the complete compatible DLL with relay, not the relay compile test. Inspect the output and its manifest before distribution; this process does not prove the supplied binaries correspond to their claimed versions. Distribute required corresponding source and license notices with the release. Do not include host DLLs, private build projects, signing material or keys.
+After building and testing a matched plugin, full ninaAPI DLL and web build, assemble from explicit artifact paths. The output directory must not exist. The ninaAPI input must be the complete compatible DLL with relay, not the relay compile test. Inspect the output and its manifest before distribution; this process does not prove the supplied binaries correspond to their claimed versions. Distribute required corresponding source and license notices with the release. Do not include host DLLs, private build projects, signing material or keys.
 
 ```sh
-python3 scripts/build_bundle.py --version 0.2.0-experimental --plugin /path/to/NINA.Plugins.MLAstroRPA.Linux.dll --worker /path/to/Pins.MLAstro.UsbWorker --nina-api /path/to/ninaAPI.dll --web-dir /path/to/built-web --output /path/to/new-bundle
+python3 scripts/build_bundle.py --version 0.2.0-experimental --plugin /path/to/NINA.Plugins.MLAstroRPA.Linux.dll --nina-api /path/to/ninaAPI.dll --web-dir /path/to/built-web --output /path/to/new-bundle
 ```
 
 Pass `--source-revision` with the 40-hex public corresponding-source commit when assembling a release. The bundle includes the guide, build instructions, upstream attribution, source notice and license texts. The manifest lists the source repository and revision, SHA-256 hashes, components and the intended compatibility baseline; it does not verify the binaries or establish that these artifacts were tested. Optional repeated `--component-version NAME=VERSION` arguments record unverified supplier claims. Hashes are not signatures. See USER-GUIDE.md for check, installation and recovery. Native Android APKs are separate and are not bundled.

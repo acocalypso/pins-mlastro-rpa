@@ -1,6 +1,6 @@
 # MLAstro One RPA integration for PINS / Touch-N-Stars
 
-Experimental integration 0.3.0-beta.1 for clean-install testing, 2026-11-11.
+Experimental integration 0.3.0-beta.2 for clean-install testing, 2026-11-11.
 
 See [RELEASE-NOTES.md](RELEASE-NOTES.md) and GitHub Releases for the matched ARM64 beta bundle.
 

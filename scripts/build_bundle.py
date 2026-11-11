@@ -29,7 +29,7 @@ def copy_file(src, dst):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    for name in ('version', 'plugin', 'worker', 'nina-api', 'web-dir', 'output'):
+    for name in ('version', 'plugin', 'nina-api', 'web-dir', 'output'):
         p.add_argument('--' + name, required=True)
     p.add_argument('--source-revision', help='40-hex corresponding source commit')
     p.add_argument('--component-version', action='append', default=[], metavar='NAME=VERSION', help='Optional supplied version claim; not verified')
@@ -52,7 +52,6 @@ def main():
         p.error('web-dir must be a real build directory with index.html')
     # These are the only backend files admitted; never copy a host library directory.
     inputs = [(Path(args.plugin), 'payload/plugin/NINA.Plugins.MLAstroRPA.Linux.dll'),
-              (Path(args.worker), 'payload/plugin/usb-worker/Pins.MLAstro.UsbWorker'),
               (Path(args.nina_api), 'payload/ninaAPI/ninaAPI.dll')]
     for f in web.rglob('*'):
         if f.is_symlink():
@@ -76,7 +75,7 @@ def main():
         notice = ('# Corresponding source and attribution\n\n'
                   'Source repository: https://github.com/ydutertre/pins-mlastro-rpa\n\n'
                   f'Source revision: {revision}\n\n'
-                  'The source export contains the MLAstro plugin and worker, ninaAPI relay and portable PINS build project, and Touch-N-Stars integration patches. See UPSTREAM.md for pinned upstream baselines, licenses and attribution, and BUILD.md for build instructions and required dependencies. The backend and relay are MPL-2.0; the Touch-N-Stars integration is GPL-3.0. License texts are included in licenses/. Native Android builds, if distributed, need their corresponding source and notices separately.\n')
+                  'The source export contains the MLAstro plugin, ninaAPI relay and portable PINS build project, and Touch-N-Stars integration patches. See UPSTREAM.md for pinned upstream baselines, licenses and attribution, and BUILD.md for build instructions and required dependencies. The backend and relay are MPL-2.0; the Touch-N-Stars integration is GPL-3.0. License texts are included in licenses/. Native Android builds, if distributed, need their corresponding source and notices separately.\n')
         (root / 'SOURCE-NOTICE.md').write_text(notice, encoding='utf-8')
         copy_file(source_root / 'LICENSE', root / 'licenses/MPL-2.0.txt')
         copy_file(source_root / 'integration/touch-n-stars/LICENSE', root / 'licenses/GPL-3.0.txt')
@@ -88,7 +87,7 @@ def main():
                     'source_repository': 'https://github.com/ydutertre/pins-mlastro-rpa',
                     'source_revision': args.source_revision.lower() if args.source_revision else None, 'target_baseline_unverified_for_these_artifacts': VERSIONS,
                     'declared_component_versions_unverified': declared_versions,
-                    'components': ['MLAstro Linux plugin', 'Linux ARM64 USB worker',
+                    'components': ['MLAstro Linux plugin', 
                                    'full ninaAPI relay build', 'Touch-N-Stars web build'],
                     'files': files}
         (root / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')

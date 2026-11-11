@@ -1,3 +1,5 @@
+> Current beta: USB is in-process only. References below to the isolated USB worker describe earlier builds and are historical, not current release validation.
+
 # Architecture and behavior
 
 Version 0.2.0 exposes fixed relative steps and finite TPPA corrections. Continuous jogging and browser jog leases were removed; old routes return 410. The Linux worker rejects continuous-mode configuration and admits relative arrows only after relative mode is selected. No jog-specific one-second/900-ms motion deadlines remain.

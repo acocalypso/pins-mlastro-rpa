@@ -69,7 +69,7 @@ public sealed partial class MLAstroPlugin : PluginBase
         faultCode = FaultCode(motionSafety.Fault),
         recoveryAction = motionSafety.Inhibited ? "Reconnect the RPA, wait for READY, then start a new alignment. Movement will not resume automatically." : null,
         connected = IsHardwareConnected,
-        usbHeartbeatIsolated = Serial.IsUsbWorkerActive,
+        usbHeartbeatIsolated = false,
         transport = IsHardwareConnected ? (Wireless.IsConnected ? "wifi" : "usb") : null,
         connectionAddress = IsHardwareConnected ? (Wireless.IsConnected ? Wireless.ConfiguredAddress : Settings.ComPort) : null,
         usbDevicePath = IsHardwareConnected && Settings.TransportMode == MlastroTransportMode.Serial ? Settings.ComPort : null,

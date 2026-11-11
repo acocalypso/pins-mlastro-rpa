@@ -176,7 +176,7 @@ public sealed partial class MLAstroPlugin
         string VersionOf(string name) => AppDomain.CurrentDomain.GetAssemblies().FirstOrDefault(a => a.GetName().Name == name)?.GetName().Version?.ToString();
         var stamp = Volatile.Read(ref diagnosticLastTelemetry);
         var input = new DiagnosticsInput(GetType().Assembly.GetName().Version?.ToString(), Environment.Version.ToString(), Environment.OSVersion.Version.ToString(),
-            transport, Serial.IsUsbWorkerActive, fault, readiness,
+            transport, false, fault, readiness,
             Runner.IsSessionRunning ? DiagnosticAutomation.Running : DiagnosticAutomation.Idle,
             watchdogState?.Supported ?? false, watchdogState?.Enabled, events,
             firmware.Success ? firmware.Groups[1].Value : null,
