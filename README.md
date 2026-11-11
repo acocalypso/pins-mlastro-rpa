@@ -9,6 +9,8 @@ Repository: https://github.com/ydutertre/pins-mlastro-rpa
 
 Connect an MLAstro One RPA to a Raspberry Pi over USB or Wi-Fi, use manual adjustment controls, and start a TPPA session with automatic polar corrections. A completed alignment under the stars was reported on 2026-11-06; the newer 0.2.0 management and packaging changes still require hardware acceptance.
 
+Read [INSTALL.md](INSTALL.md) to install and [QUICK-START.md](QUICK-START.md) to connect, align and troubleshoot.
+
 ## Contents
 
 - `src/Pins.MLAstro.Plugin`: headless PINS plugin, firmware transports and TPPA broker integration.
@@ -22,7 +24,7 @@ Connect an MLAstro One RPA to a Raspberry Pi over USB or Wi-Fi, use manual adjus
 ## Implemented behavior
 
 - Wi-Fi or automatic USB identification; compatible USB ports are tried until firmware identity and fresh telemetry confirm an RPA. No motor movement is sent during identification.
-- Manual arrow pad with bounded 5/10/30/60/120 arcsecond steps, speed levels 1–5, explicit firmware-backed backlash editing and Stop.
+- Manual arrow pad with bounded 5/10/30/60/120 arcsecond steps, speed levels 1â€“5, explicit firmware-backed backlash editing and Stop.
 - Continuous jogging is removed; old requests are rejected. Limits and backlash compensation remain firmware responsibilities.
 - Verified communication-watchdog control over Wi-Fi, explained faults/reconnect, allowlisted diagnostics, advanced correction settings, and an experimental matched bundle installer with rollback. See [USER-GUIDE.md](USER-GUIDE.md).
 - One-button TPPA start, tolerance/correction settings, pause/resume and stop. RPA correction selection is scoped to one session; completion/cancellation resets TPPA to ordinary operation without automatic RPA corrections. Normal TPPA may still slew the mount for its reference measurements.

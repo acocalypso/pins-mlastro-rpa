@@ -27,9 +27,48 @@ python3 install_bundle.py --check --fresh-install \
   --service pins
 ```
 
-After that succeeds, run the same command with `sudo python3` and replace `--check` with `--install`. For an upgrade, omit `--fresh-install` from both commands. The installer restarts PINS and prints a backup directory: keep it for rollback. See USER-GUIDE.md for recovery instructions.
+When the check succeeds, install with this complete command:
 
-4. Reopen the Pi's Touch-N-Stars page (usually `http://YOUR_PI_IP:5000`) and refresh it. Open **MLAstro RPA**, choose USB or Wi-Fi and connect. USB uses direct serial communication with no separate worker.
+```sh
+sudo python3 install_bundle.py --install --fresh-install \
+  --pins-home /home/pi/pins \
+  --plugin-root /home/pi/.local/share/NINA/Plugins/3.0.0 \
+  --nina-dll /home/pi/.local/share/NINA/Plugins/3.0.0/ninaAPI/ninaAPI.dll \
+  --web-root /home/pi/.local/share/NINA/Plugins/3.0.0/Touch-N-Stars/app \
+  --service pins
+```
+
+PINS will restart. Please keep the backup directory printed by the installer; USER-GUIDE.md explains how to roll back.
+
+### Upgrading an existing installation
+
+If you already installed the RPA plugin, use these commands instead:
+
+```sh
+python3 install_bundle.py --check \
+  --pins-home /home/pi/pins \
+  --plugin-root /home/pi/.local/share/NINA/Plugins/3.0.0 \
+  --nina-dll /home/pi/.local/share/NINA/Plugins/3.0.0/ninaAPI/ninaAPI.dll \
+  --web-root /home/pi/.local/share/NINA/Plugins/3.0.0/Touch-N-Stars/app \
+  --service pins
+
+sudo python3 install_bundle.py --install \
+  --pins-home /home/pi/pins \
+  --plugin-root /home/pi/.local/share/NINA/Plugins/3.0.0 \
+  --nina-dll /home/pi/.local/share/NINA/Plugins/3.0.0/ninaAPI/ninaAPI.dll \
+  --web-root /home/pi/.local/share/NINA/Plugins/3.0.0/Touch-N-Stars/app \
+  --service pins
+```
+
+### Enable the MLAstro RPA tab
+
+1. Reopen Touch-N-Stars at `http://YOUR_PI_IP:5000` and refresh the page.
+2. Open **Settings → Plugins**.
+3. Find **MLAstro RPA** and turn its enable switch on.
+4. Return to the navigation bar and select **MLAstro RPA**. On narrow screens, scroll the navigation bar sideways to find it.
+5. Choose **USB** or **Wi-Fi** and connect. USB uses direct serial communication, with no separate worker.
+
+Enable the plugin separately in each browser or Android app you use. If the entry is missing, refresh/reopen the client and confirm you are using the updated web interface or the MLAstro test APK.
 
 ## Android
 
