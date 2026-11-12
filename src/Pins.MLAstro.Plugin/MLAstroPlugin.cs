@@ -85,13 +85,14 @@ public sealed partial class MLAstroPlugin : PluginBase
         ,backlash = Serial.IsConnected ? new { enabled = Settings.BacklashEnabled, azSteps = Settings.BacklashAz, altSteps = Settings.BacklashAlt } : null
     };
 
-    public async Task ManualMoveAsync(string axis, int direction, double arcseconds)
+    /// <param name="token">Limits only the wait for the control gate; a dispatched move is never cancelled by it.</param>
+    public async Task ManualMoveAsync(string axis, int direction, double arcseconds, CancellationToken token = default)
     {
         var generation = Volatile.Read(ref stopGeneration);
         if ((axis != "az" && axis != "alt") || (direction != -1 && direction != 1) ||
             !double.IsFinite(arcseconds) || arcseconds < 1 || arcseconds > 120 || arcseconds != Math.Truncate(arcseconds))
             throw new ArgumentException("Choose az/alt, direction -1/+1 and a step of 1–120 arcseconds.");
-        await controlGate.WaitAsync();
+        await controlGate.WaitAsync(token);
         try {
             lock (motionGate) {
             RequireMotionSafe();
@@ -285,10 +286,11 @@ public sealed partial class MLAstroPlugin : PluginBase
         } finally { controlGate.Release(); }
     }
 
-    public async Task SetAutomationAsync(bool enabled)
+    /// <param name="token">Limits only the wait for the control gate. Pass none when disarming.</param>
+    public async Task SetAutomationAsync(bool enabled, CancellationToken token = default)
     {
         var generation = Volatile.Read(ref stopGeneration);
-        await controlGate.WaitAsync();
+        await controlGate.WaitAsync(token);
         try {
             if (enabled) {
                 lock (motionGate) {

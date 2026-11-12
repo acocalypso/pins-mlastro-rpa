@@ -60,7 +60,8 @@ public sealed class ControlApi : IDisposable
                 deadline.CancelAfter(TimeSpan.FromSeconds(path is "/connect" or "/reconnect" ? 45 : 10));
                 var bytes = new byte[(int)context.Request.ContentLength64];
                 await context.Request.InputStream.ReadExactlyAsync(bytes, deadline.Token);
-                using var body = JsonDocument.Parse(bytes);
+                // Stop and disconnect take no fields: a safety command must not fail on an empty body.
+                using var body = JsonDocument.Parse(bytes.Length == 0 && path is "/stop" or "/disconnect" ? "{}"u8.ToArray() : bytes);
                 var root = body.RootElement;
                 switch (path)
                 {
@@ -74,9 +75,12 @@ public sealed class ControlApi : IDisposable
                         result = new { connected = await plugin.ConnectAsync(transport == "wifi", root.GetProperty("address").GetString(), deadline.Token) };
                         break;
                     case "/disconnect": await plugin.DisconnectAsync(); result = plugin.GetStatus(); break;
-                    case "/automation": await plugin.SetAutomationAsync(root.GetProperty("enabled").GetBoolean()); result = plugin.GetStatus(); break;
+                    case "/automation":
+                        // Arming waits at most for the deadline; disarming is never abandoned.
+                        var arm = root.GetProperty("enabled").GetBoolean();
+                        await plugin.SetAutomationAsync(arm, arm ? deadline.Token : CancellationToken.None); result = plugin.GetStatus(); break;
                     case "/stop": await plugin.StopAsync(); result = plugin.GetStatus(); break;
-                    case "/move": await plugin.ManualMoveAsync(root.GetProperty("axis").GetString(), root.GetProperty("direction").GetInt32(), root.GetProperty("arcseconds").GetDouble()); result = plugin.GetStatus(); break;
+                    case "/move": await plugin.ManualMoveAsync(root.GetProperty("axis").GetString(), root.GetProperty("direction").GetInt32(), root.GetProperty("arcseconds").GetDouble(), deadline.Token); result = plugin.GetStatus(); break;
                     case "/discover": result = await plugin.DiscoverTppaAsync(deadline.Token); break;
                     case "/select-controller": await plugin.SelectForTppaAsync(); result = new { selected = true }; break;
                     case "/settings":
